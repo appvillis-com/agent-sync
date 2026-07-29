@@ -24,6 +24,24 @@ acquired. The failure is silent: `whoami` reports a lease, and it is somebody el
 - where identity still cannot be established, the run says so rather than presenting a shared
   entry as separation
 
+### `scaffold --full` — the architecture that keeps documentation linked, not merely present
+
+`scaffold` seeded a decision register and an agent protocol. That is enough to be coordinated and
+not enough to stay coherent: the things that rot are the links between documents, and nothing was
+seeding the pieces that hold them — a question register that resolves into decisions, an index
+nobody has to scan the register to use, one place for facts about two repositories, one definition
+per entity with a checkable address, **and a gate**, because each of those decays silently.
+
+`--full` adds `OPEN_QUESTIONS.md`, `INDEX.md`, `DEPENDENCIES.md`, `DATA_MODEL.md` (with the entity
+register and the one-definition rule) and `scripts/check-docs.sh`, which fails on: an id cited and
+never defined, a next-free-ID line that is not next, a relative link to a file that does not exist,
+a `#anchor` that does not exist in the file it points at, and a decision with no index row. All
+five probed against planted defects.
+
+**A fresh scaffold passes its own gate.** The first version did not — it counted the template block
+and the allocation line as real ids — and a project that starts red teaches everyone that the gate
+is noise.
+
 ### `finish` — the gate expressions this plugin declares, executed
 
 `references/pipeline-binding.md` has always listed *submodule pointers current* and *every lease

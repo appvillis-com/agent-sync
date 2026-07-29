@@ -191,6 +191,7 @@ npx sshlg-skills install
 | `adopt` | Inspect an existing project and **propose** a config — writes nothing |
 | `scaffold` | Create the missing documentation architecture. Never overwrites |
 | `check` | Validate the whole setup end to end. Non-zero when it is not healthy |
+| `scaffold [--full]` | Create only what is missing, never a line over anything that exists. `--full` also seeds the question register, the index, the dependency board, the data model with its entity register, and the docs gate |
 | `finish [--gates]` | Is the **work** finished — every repository clean, pushed and pointed at, no lease left held. `check` answers whether the project is wired correctly; this answers whether you are done |
 
 `$SKILL_DIR` is this skill's own directory. Every command reads
