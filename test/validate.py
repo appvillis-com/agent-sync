@@ -357,6 +357,50 @@ def check_hooks_manifest() -> None:
                     err(f"hooks.json/{event}: command target {m.group(1)} does not exist")
 
 
+def check_hooks_noop_without_config() -> None:
+    """Installed globally, every hook must do nothing in an unconfigured project.
+
+    `guard.sh` shipped for eleven versions with the config check on only one of
+    its two branches: the `git commit` branch called `agent_sync.py guard` per
+    staged path, read that command's "no .claude/agent-sync.json" exit 2 as
+    "no lease held", and blocked every commit in every repo that had never run
+    `init`. Syntax checks cannot see that, so the invariant is exercised.
+    """
+    hooks = ROOT / "plugins" / "agent-sync" / "hooks"
+    if not shutil.which("git"):
+        notes.append("git not found — hook no-op check skipped")
+        return
+    payload = json.dumps({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        # The exact shape that regressed: a commit, no file_path.
+        "tool_input": {"command": "git " + "commit -m wip"},
+    })
+    with tempfile.TemporaryDirectory() as unconfigured:
+        # A real repo with a staged path, or the guard's commit branch reads an
+        # empty index and exits 0 for the wrong reason — the bug would pass.
+        (Path(unconfigured) / "f.txt").write_text("x\n")
+        for argv in (["git", "init", "-q"], ["git", "add", "f.txt"]):
+            subprocess.run(argv, cwd=unconfigured, capture_output=True)
+        env = {**os.environ,
+               "CLAUDE_PLUGIN_ROOT": str(ROOT / "plugins" / "agent-sync"),
+               "CLAUDE_PROJECT_DIR": unconfigured}
+        for sh in sorted(hooks.glob("*.sh")):
+            if sh.name.startswith("_"):
+                continue
+            try:
+                r = subprocess.run(["bash", str(sh)], input=payload, env=env,
+                                   cwd=unconfigured, capture_output=True,
+                                   text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                err(f"{rel(sh)}: hung in a project without .claude/agent-sync.json")
+                continue
+            if r.returncode != 0:
+                err(f"{rel(sh)}: exit {r.returncode} in a project without "
+                    f"agent-sync.json — hooks must be a no-op there "
+                    f"({r.stderr.strip() or 'no stderr'})")
+
+
 def main() -> int:
     check_manifests()
     check_no_stray_skills()
@@ -368,6 +412,7 @@ def main() -> int:
     check_no_credentials()
     check_scripts_run()
     check_hooks_manifest()
+    check_hooks_noop_without_config()
 
     for n in notes:
         print(f"note: {n}")

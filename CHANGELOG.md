@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.3 — 2026-07-29
+
+### Fixed — the guard blocked commits in projects that never installed agent-sync
+`_lib.sh` states the contract: *"Every hook is a no-op in a project that does not use
+agent-sync, so installing the plugin globally changes nothing elsewhere."* `guard.sh` was
+the one hook that never sourced `_lib.sh`, and it honored that contract on only one of its
+two branches.
+
+- **The `git commit` branch had no configuration check.** It ran `agent_sync.py guard` on
+  every staged path; in an uninitialized project that command exits 2 with *"no
+  `.claude/agent-sync.json` in this project"*, which the loop read as "this run holds no
+  lease" — so every commit in every repo without agent-sync was blocked, with a message
+  naming a lease the project could not possibly need. The single-file branch had the check
+  all along, which is why the failure only ever surfaced on commits.
+- `guard.sh` now sources `_lib.sh` and gates on `agent_sync_configured` like the other three
+  hooks, so the check cannot drift apart from them again. The hand-rolled `AGENT_SYNC_PY`
+  path and the duplicated `[ -f … ]` test are gone.
+- The staged-path listing now runs against `${CLAUDE_PROJECT_DIR:-$PWD}`, the same directory
+  the configuration check reads. Before, the two could point at different repositories.
+
+### Added
+- **`test/validate.py` exercises the no-op contract** instead of only checking syntax: every
+  hook runs against a throwaway git repository that has a staged file and no
+  `.claude/agent-sync.json`, and must exit 0. Verified red against the pre-fix `guard.sh` and
+  green after — a `bash -n` pass could never have caught this.
+
 ## 1.2.2 — 2026-07-29
 
 ### Changed
