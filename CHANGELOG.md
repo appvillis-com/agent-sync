@@ -24,6 +24,22 @@ already removed that note, which is why only one half of the loop was ever writt
 now runs acquire → `whoami` → `guard` → release against **both** modes; against 1.3.0 it fails with
 the two symptoms above, which is the point of adding it.
 
+## 1.3.1 — 2026-07-29
+
+### Ignoring the state directory does nothing once git is tracking it
+
+Found in the project this plugin was built for: `.agent-sync/` was gitignored **and committed**,
+because the files went in before the rule existed. Consequences, all of them silent:
+
+- every tool call rewrites `last-renew`, so all three repositories were permanently dirty and no
+  run could ever report itself finished
+- `run-id` is the checkout's **agent identity**. Committed, it reaches every clone — two machines
+  would then coordinate as one run, which is the failure 1.3.0 fixed at the other end
+
+`init` now untracks the directory when it finds it tracked, and `check` reports it as a problem
+rather than passing a project whose state is versioned. Probed: a repository with a committed
+`.agent-sync/run-id` fails `check` with the exact removal command, and passes once it is untracked.
+
 ## 1.3.0 — 2026-07-29
 
 ### Two agents in one checkout were one identity — fixed

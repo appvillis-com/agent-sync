@@ -1778,6 +1778,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     ensure_gitignored(root, str(ENV_FILE))
     ensure_gitignored(root, f"{STATE_DIR}/")
+    ensure_untracked(root, f"{STATE_DIR}/")
 
     print()
     if backend == "outline":
@@ -1831,6 +1832,25 @@ def ensure_gitignored(root: Path, entry: str) -> None:
             fh.write(f"{header}\n")
         fh.write(f"{entry}\n")
     print(f"✓ added {entry} to .gitignore")
+
+
+def ensure_untracked(root: Path, entry: str) -> None:
+    """Ignoring a path does nothing once git is already tracking it.
+
+    Found in a real project: the state directory had been committed before the ignore rule
+    existed, so `git status` reported it modified after **every** tool call — the repository was
+    permanently dirty and no run could report itself finished. `run-id` is the worse half: it is
+    this checkout's agent identity, and committed it reaches every clone, so two machines
+    coordinate as one run.
+    """
+    tracked = git("ls-files", "--", entry.rstrip("/"), cwd=root)
+    if not tracked:
+        return
+    if git("rm", "-r", "--cached", "-q", "--", entry.rstrip("/"), cwd=root) is None:
+        return
+    n = len(tracked.split("\n"))
+    print(f"✓ untracked {n} committed file(s) under {entry} — commit that removal; "
+          "ignoring a tracked path has no effect")
 
 
 # --------------------------------------------------------------------------- status
@@ -2713,6 +2733,16 @@ def cmd_check(_args: argparse.Namespace) -> int:
                                 "run `reconcile --set-baseline` once")
         except Fail:
             pass
+
+    tracked_state = git("ls-files", "--", STATE_DIR)
+    if tracked_state:
+        problems.append(
+            f"{STATE_DIR}/ is tracked by git ({len(tracked_state.split(chr(10)))} file(s)) — it is "
+            "generated state, the repository is dirty after every tool call, and a committed "
+            "run-id hands this checkout's identity to every clone. "
+            f"Run: git rm -r --cached {STATE_DIR} && commit")
+    else:
+        ok.append(f"{STATE_DIR}/ is not tracked")
 
     for line in ok:
         print(f"  ✓ {line}")
