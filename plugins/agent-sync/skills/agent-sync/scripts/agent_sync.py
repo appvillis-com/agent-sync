@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -124,16 +124,45 @@ def load_config(root: Path) -> dict[str, Any]:
 
 
 def run_id(root: Path) -> str:
-    """Stable for the life of one agent session."""
-    env = os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("AGENT_SYNC_RUN_ID")
-    if env:
-        return "r-" + re.sub(r"[^a-z0-9]", "", env.lower())[:12]
+    """One identity per session, whichever way the tool is invoked.
+
+    This is load-bearing. A hook runs with CLAUDE_SESSION_ID in its environment and a
+    plain shell command usually does not, so deriving the id from that variable gave
+    one session two identities: the agent acquired a lease as one and was then denied
+    by its own guard as the other. The gate blocked the lease holder.
+
+    The marker file is therefore authoritative for the checkout, with the session name
+    recorded beside it. A genuinely different session rotates it; a run that merely
+    *learns* its session name adopts it instead of rotating — otherwise the first shell
+    command in a fresh checkout would fork the identity all over again.
+    """
+    override = os.environ.get("AGENT_SYNC_RUN_ID")
+    if override:
+        return "r-" + re.sub(r"[^a-z0-9]", "", override.lower())[:12]
+
+    session = os.environ.get("CLAUDE_SESSION_ID") or ""
     marker = root / STATE_DIR / "run-id"
+
+    stored: dict[str, str] = {}
     if marker.exists():
-        return marker.read_text().strip()
-    rid = "r-%06x%s" % (random.getrandbits(24), format(int(time.time()) & 0xFFF, "03x"))
+        raw = marker.read_text().strip()
+        try:
+            stored = json.loads(raw)
+        except json.JSONDecodeError:
+            stored = {"run": raw, "session": ""}   # legacy plain-text marker
+
+    if stored.get("run"):
+        known = stored.get("session", "")
+        if not session or known == session:
+            return stored["run"]
+        if not known:
+            marker.write_text(json.dumps({"run": stored["run"], "session": session}))
+            return stored["run"]
+
+    rid = ("r-" + re.sub(r"[^a-z0-9]", "", session.lower())[:12]) if session else \
+          "r-%06x%s" % (random.getrandbits(24), format(int(time.time()) & 0xFFF, "03x"))
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(rid)
+    marker.write_text(json.dumps({"run": rid, "session": session}))
     return rid
 
 

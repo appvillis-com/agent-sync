@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.3.1 — 2026-07-29
+
+### Fixed
+- **The guard blocked the lease holder.** A hook runs with `CLAUDE_SESSION_ID` in its
+  environment and a plain shell command usually does not, so the run id was derived two
+  different ways for one session: the agent acquired a lease as `r-f49d900b9` and was then
+  denied by its own `PreToolUse` guard as `r-5ef2554fe611`. The primary flow — acquire,
+  then edit a guarded register — could not complete. Found when the gate refused the very
+  commit that was writing its decision record.
+  The marker file is now authoritative for the checkout, with the session name recorded
+  beside it: a different session rotates the id, while a run that merely *learns* its
+  session name adopts it instead of rotating.
+
 ## 0.3.0 — 2026-07-29
 
 ### Fixed
