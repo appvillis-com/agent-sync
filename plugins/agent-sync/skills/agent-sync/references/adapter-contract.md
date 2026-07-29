@@ -20,7 +20,8 @@ capabilities. Nothing else about it is the coordinator's business.
 ## Capabilities
 
 ```json
-{ "atomicAppend": true, "totalOrderRead": true, "search": true }
+{ "atomicAppend": true, "totalOrderRead": true, "search": true,
+  "exclusiveLease": false }
 ```
 
 - **`atomicAppend`** — `log.append` reaches the server as an append. If the adapter
@@ -30,14 +31,19 @@ capabilities. Nothing else about it is the coordinator's business.
   the same order. A backend that merges concurrently, or that returns per-reader
   views, is **false**.
 - **`search`** — `search` is implemented rather than stubbed.
+- **`exclusiveLease`** — whether *this backend* can decide a contended lease. Almost
+  always **false**: it requires compare-and-swap, and none of the document stores has
+  it. Declaring it true without one is the most damaging lie an adapter can tell, so
+  the default is false and the burden of proof is on the adapter.
 
 ## Degradation — non-negotiable
 
-**If `atomicAppend` or `totalOrderRead` is false, the adapter MUST NOT be the lease
-authority.** The coordinator then:
+**No adapter is the lease authority.** Exclusion is an atomic local lock; the adapter
+carries the record and the awareness. If `atomicAppend` or `totalOrderRead` is false the
+coordinator additionally:
 
 1. states it once, in plain words, at session start;
-2. falls back to git-file leases (`references/backend-fs.md`);
+2. keeps the local lock as the only arbiter (`references/backend-fs.md`);
 3. marks every run `ungated` on the board.
 
 There is no third option. A lease that is not actually exclusive is worse than no

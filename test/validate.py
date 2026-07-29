@@ -143,6 +143,11 @@ def check_skill(skill_dir: Path) -> str | None:
         if not d.exists():
             continue
         for f in d.rglob("*"):
+            # Bytecode is a local artefact of importing the module, not a shipped file.
+            # The rule's purpose — never publish junk — is enforced by .npmignore, and
+            # that guarantee is asserted below rather than waived here.
+            if "__pycache__" in f.parts or f.suffix == ".pyc":
+                continue
             if f.is_file() and f.parent != d:
                 err(f"{rel(f)}: must be one level deep under {sub}/")
     refs = skill_dir / "references"
@@ -279,6 +284,19 @@ def check_example_against_schema() -> None:
         err(f"agent-sync.example.json: backend '{backend}' not in the schema enum")
 
 
+def check_npm_excludes() -> None:
+    """package.json ships plugins/ wholesale, so the exclusions must be explicit."""
+    p = ROOT / ".npmignore"
+    if not p.exists():
+        err(".npmignore: missing — plugins/ is shipped wholesale, so bytecode and local "
+            "state would be published with it")
+        return
+    body = p.read_text()
+    for needed in ("__pycache__", "*.pyc"):
+        if needed not in body:
+            err(f".npmignore: does not exclude {needed}")
+
+
 def check_public_floor() -> None:
     for f in ("README.md", "CHANGELOG.md", "LICENSE", "CONTRIBUTING.md", "SECURITY.md"):
         if not (ROOT / f).exists():
@@ -345,6 +363,7 @@ def main() -> int:
     ok, version = check_version_sync()
     check_example_against_schema()
     check_public_floor()
+    check_npm_excludes()
     check_no_host_identity()
     check_no_credentials()
     check_scripts_run()

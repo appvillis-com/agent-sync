@@ -3,6 +3,41 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.0.0 — 2026-07-29
+
+A full audit of the running system against its own promises. Three surfaces were
+configured and unimplemented, and the central safety claim was false. All measured, none
+inferred.
+
+### Fixed — the lease was not exclusive
+- **A shared append-only document loses writes.** Twelve concurrent appends to one Outline
+  document returned twelve successes and left **three** lines: `editMode: append` reads,
+  appends and writes back, so simultaneous writers clobber each other and each is told it
+  succeeded. A lease decided on that can be held by two runs, each with proof.
+- **Sharding per writer fixes the loss and breaks the decision.** 12/12 land, but without
+  compare-and-swap nothing can answer "is a contender still writing?", so eight parallel
+  processes each read only their own shard and **eight won one key**. A three-second settle
+  window took it to five. It cannot reach one.
+- **Exclusion now comes from `os.open(O_EXCL)`** — an atomic create is the decision, and the
+  plane carries the record. Twelve parallel processes, **one winner, eleven losers all naming
+  the same holder**. Publishing to the plane can fail without affecting correctness, so it is
+  reported rather than raised.
+- The limit is stated instead of implied: a lock file is exclusive between processes on one
+  filesystem, advisory across machines. `exclusiveLease` joins the capability set and defaults
+  to false, because declaring it without compare-and-swap is the most damaging lie an adapter
+  can tell.
+
+### Fixed — configured but not implemented
+- **`claimTags`** appeared in the schema, in every config and in DEC-0216, and was read
+  nowhere. `status` now reports where a held lease and the git claim tag disagree — and says
+  plainly when the configured mapping *cannot be verified at all*, which is the case in the
+  project that shipped it. The tool verifies; the run writes. A process that rewrites a shared
+  registry unattended from a hook is the mechanism that clobbers other agents' work.
+- **Mirror drift detection** was asserted in a docstring beside code that never checked it.
+  `status` now reports pages whose stamped commit is not HEAD.
+- Transient `5xx` from the knowledge base are retried like `429`; twelve concurrent document
+  creations had been failing outright.
+
 ## 0.6.0 — 2026-07-29
 
 ### Fixed

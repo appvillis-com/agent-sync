@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.6.0"
+VERSION = "1.0.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -59,6 +59,7 @@ CANDIDATE_RE = re.compile(r"^[-*+] `")
 PAIR_RE = re.compile(r"`([a-z_]+)=([^`]*)`")
 MAX_UNPARSEABLE = 0.02
 
+DEFAULT_SETTLE = 3.0
 DEFAULT_TTL = 2700
 DEFAULT_RENEW = 300
 
@@ -232,7 +233,8 @@ def run_id(root: Path) -> str:
 
 class Adapter:
     name = "none"
-    capabilities = {"atomicAppend": False, "totalOrderRead": False, "search": False}
+    capabilities = {"atomicAppend": False, "totalOrderRead": False, "search": False,
+                    "exclusiveLease": False}
 
     def configured(self) -> bool:
         raise NotImplementedError
@@ -255,10 +257,19 @@ class Adapter:
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return []
 
+    def log_shards(self, prefix: str) -> list[str]:
+        """Every object whose title starts with `prefix` — one per writer."""
+        raise NotImplementedError
+
     @property
     def is_lease_authority(self) -> bool:
         return bool(self.capabilities["atomicAppend"]
                     and self.capabilities["totalOrderRead"])
+
+    @property
+    def is_exclusive(self) -> bool:
+        """Whether a won lease is a guarantee or advice. Never assume the first."""
+        return bool(self.capabilities.get("exclusiveLease"))
 
 
 class OutlineAdapter(Adapter):
@@ -270,7 +281,12 @@ class OutlineAdapter(Adapter):
     """
 
     name = "outline"
-    capabilities = {"atomicAppend": True, "totalOrderRead": True, "search": True}
+    # exclusiveLease is FALSE and that is not a formality. Outline has no
+    # compare-and-swap, so a decision cannot be made after all contenders have
+    # written — only after a settle window that is long enough in practice. Two runs
+    # starting inside that window can both win. Measured, not assumed.
+    capabilities = {"atomicAppend": True, "totalOrderRead": True, "search": True,
+                    "exclusiveLease": False}
 
     def __init__(self) -> None:
         self.url = (os.environ.get("AGENT_SYNC_OUTLINE_URL") or "").rstrip("/")
@@ -315,8 +331,10 @@ class OutlineAdapter(Adapter):
                         f"outline {endpoint}: {exc.code} — the token is rejected"
                         f"{': ' + detail if detail else ''}. "
                         "A credential does not become valid on retry.") from exc
-                if exc.code == 429 and attempt < 4:
-                    time.sleep(float(exc.headers.get("Retry-After") or delay))
+                # 429 and transient 5xx deserve a retry; 401/403 never will.
+                if exc.code in (429, 500, 502, 503, 504) and attempt < 4:
+                    time.sleep(float(exc.headers.get("Retry-After") or delay)
+                               + random.random() * 0.4)
                     delay *= 2
                     continue
                 raise Fail(f"outline {endpoint}: HTTP {exc.code}"
@@ -397,6 +415,37 @@ class OutlineAdapter(Adapter):
                         "snippet": row.get("context", "")})
         return out
 
+    def log_shards(self, prefix: str) -> list[str]:
+        """Enumerate by the collection's structure, never by the search index.
+
+        `documents.search` matches TEXT; a shard's identity is in its TITLE, and a
+        freshly created shard is not reliably returned. Under concurrency that produced
+        the worst possible failure: each process saw only its own shard, replayed it,
+        and concluded it had won — eight processes, eight winners, one key.
+        `documents.list` reads the collection structure and returns a new document at
+        once.
+        """
+        out: list[str] = []
+        offset = 0
+        while True:
+            rows = self._call("documents.list",
+                              {"collectionId": self.resolve_collection(),
+                               "limit": 100, "offset": offset})
+            rows = rows if isinstance(rows, list) else []
+            for doc in rows:
+                title = doc.get("title") or ""
+                if title.startswith(prefix):
+                    out.append(doc["id"])
+                    self._ids[title] = doc["id"]
+            if len(rows) < 100:
+                break
+            offset += 100
+            if offset > 1000:      # a bound, and it is reported rather than silent
+                print("agent-sync: more than 1000 documents in the collection; "
+                      "shard enumeration truncated", file=sys.stderr)
+                break
+        return out
+
 
 class FsAdapter(Adapter):
     """Degraded mode. Files under .agent-sync/, committed and pushed.
@@ -407,7 +456,9 @@ class FsAdapter(Adapter):
     """
 
     name = "fs"
-    capabilities = {"atomicAppend": False, "totalOrderRead": False, "search": False}
+    # A local lock file IS an exclusive primitive between processes on one machine.
+    capabilities = {"atomicAppend": False, "totalOrderRead": False, "search": False,
+                    "exclusiveLease": True}
 
     def __init__(self, root: Path) -> None:
         self.base = root / STATE_DIR
@@ -441,6 +492,10 @@ class FsAdapter(Adapter):
     def doc_get(self, oid: str) -> str:
         p = Path(oid)
         return p.read_text() if p.exists() else ""
+
+    def log_shards(self, prefix: str) -> list[str]:
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", prefix).strip("-").lower()
+        return [str(q) for q in sorted(self.base.glob(f"{stem}*.md"))]
 
 
 def make_adapter(cfg: dict[str, Any], root: Path) -> Adapter:
@@ -554,63 +609,121 @@ class Sync:
         self.adapter = make_adapter(self.cfg, self.root)
         self.rid = run_id(self.root)
         self.ttl = int(self.cfg.get("leaseTtlSeconds") or DEFAULT_TTL)
+        self.settle = float(self.cfg.get("settleSeconds") or DEFAULT_SETTLE)
 
     @property
     def gated(self) -> bool:
         return bool(self.cfg.get("gated", True)) and self.adapter.is_lease_authority
 
     def log_id(self, which: str) -> str:
-        return self.adapter.tree_ensure(LOGS[which])
+        """This run's OWN shard. One writer per document, always.
+
+        Outline's `editMode: append` is not atomic under concurrency: the server reads
+        the text, appends and writes it back, so simultaneous requests clobber each
+        other — and every one of them returns `ok: true`. Measured: twelve concurrent
+        appends, twelve successes reported, three lines present. Nine writes lost
+        silently.
+
+        That breaks mutual exclusion outright. If B's write erases A's acquire, A has
+        already read back and seen itself win, and B reads back and sees itself win —
+        two holders of one lease, each with proof.
+
+        Sharding removes the race rather than fighting it: nobody else writes this
+        document, so nothing can be clobbered. The cost is that a total order can no
+        longer come from one document's line order, so reads merge the shards and sort
+        by (timestamp, run). Every reader computes the SAME order — which is the
+        property the protocol actually needs. Clock skew now affects who wins a tie,
+        not whether readers agree, and an unfair winner is survivable where
+        disagreement is not.
+        """
+        return self.adapter.tree_ensure(f"{LOGS[which]} — {self.rid}")
 
     def events(self, which: str) -> tuple[list[dict[str, str]], int]:
-        return parse_log(self.adapter.log_read(self.log_id(which)))
+        """Merge every shard, plus any pre-sharding single document, into one order."""
+        prefix = LOGS[which]
+        texts: list[str] = []
+        seen: set[str] = set()
+        for oid in self.adapter.log_shards(prefix):
+            if oid in seen:
+                continue
+            seen.add(oid)
+            texts.append(self.adapter.log_read(oid))
+
+        events: list[dict[str, str]] = []
+        bad = 0
+        for seq, text in enumerate(texts):
+            evs, b = parse_log(text)
+            bad += b
+            for i, ev in enumerate(evs):
+                ev["_shard"] = str(seq)
+                ev["_i"] = str(i)
+                events.append(ev)
+
+        # Deterministic for every reader: time, then run, then position within a shard.
+        events.sort(key=lambda e: (e["ts"], e["run"], int(e["_i"])))
+        return events, bad
 
     # -- leases ------------------------------------------------------------
 
-    def acquire(self, key: str) -> tuple[bool, str | None]:
-        if not self.adapter.is_lease_authority:
-            return self._fs_lease(key)
-        oid = self.log_id("claims")
-        holder = None
-        for attempt in range(3):
-            self.adapter.log_append(oid, fmt_line(
-                "acquire", key, self.rid, ttl=self.ttl,
-                repo=repo_name(), sha=head_sha()))
-            time.sleep(0.25 + random.random() * 0.15)
-            events, bad = parse_log(self.adapter.log_read(oid))
-            # A log we cannot replay is not a lost race. Reporting "lost" here would
-            # be a lie that sends the caller looking for a holder who does not exist.
-            total = len(events) + bad
-            if total and bad / total > MAX_UNPARSEABLE:
-                raise Fail(
-                    f"the claims log is {bad}/{total} unparseable — it cannot be replayed, "
-                    "so no holder can be determined. This is a read failure, not a lost "
-                    "race. Inspect the log before trusting any lease.")
-            holder = resolve_holder(events, key, time.time())
-            if holder == self.rid:
-                self._touch_renew()
-                return True, self.rid
-            # Lost: withdraw, or the log replays us as a contender forever.
-            self.adapter.log_append(oid, fmt_line("release", key, self.rid))
-            if attempt < 2:
-                time.sleep(1.0 * (attempt + 1))
-        return False, holder
+    def _local_lock(self, key: str) -> Path:
+        d = self.root / STATE_DIR / "leases"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{re.sub(r'[^A-Za-z0-9_-]', '-', key)}.lock"
 
-    def _fs_lease(self, key: str) -> tuple[bool, str | None]:
-        """Degraded: the remote's fast-forward rule is the only real arbiter."""
-        lock = self.root / STATE_DIR / "leases" / f"{re.sub(r'[^A-Za-z0-9_-]', '-', key)}.lock"
-        lock.parent.mkdir(parents=True, exist_ok=True)
+    def acquire(self, key: str) -> tuple[bool, str | None]:
+        """Exclusion comes from an atomic file create; the cloud carries the record.
+
+        This is the third design, and the first that is true. A single shared document
+        lost writes (twelve concurrent appends, twelve reported successes, three lines
+        present). Sharding fixed the loss and broke the decision: with no way to know a
+        contender is still writing, eight processes each read only their own shard and
+        eight of them won. No settle window closes that — the store has no
+        compare-and-swap, so the question "has everyone written yet?" has no answer.
+
+        `O_EXCL` does have one. It is a genuine mutex between processes on one machine,
+        which is how these agents actually run. Across machines it is not, and the tool
+        says so rather than implying a guarantee it cannot keep.
+        """
+        lock = self._local_lock(key)
+
+        # Reap an expired lock first: it is a crashed run, not a live holder.
         if lock.exists():
             try:
                 held = json.loads(lock.read_text())
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError):
                 held = {}
-            if held.get("run") != self.rid and \
-                    time.time() <= parse_iso(held.get("ts", "")) + int(held.get("ttl", self.ttl)):
+            expired = time.time() > parse_iso(held.get("ts", "")) + int(held.get("ttl", self.ttl))
+            if held.get("run") == self.rid:
+                self._touch_renew()
+                return True, self.rid
+            if not expired:
                 return False, held.get("run")
-        lock.write_text(json.dumps(
-            {"run": self.rid, "ts": now_iso(), "ttl": self.ttl}))
+            lock.unlink(missing_ok=True)
+
+        payload = json.dumps({"run": self.rid, "ts": now_iso(), "ttl": self.ttl,
+                              "repo": repo_name()})
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                other = json.loads(lock.read_text()).get("run")
+            except (json.JSONDecodeError, OSError):
+                other = None
+            return False, other
+        with os.fdopen(fd, "w") as fh:
+            fh.write(payload)
+
         self._touch_renew()
+        # Record it for everyone else to see. A failure here costs visibility, never
+        # correctness — the lock is already held — so it must not fail the acquire.
+        if self.adapter.is_lease_authority:
+            try:
+                self.adapter.log_append(self.log_id("claims"), fmt_line(
+                    "acquire", key, self.rid, ttl=self.ttl,
+                    repo=repo_name(), sha=head_sha()))
+            except Fail as exc:
+                print(f"note: lease held, but not published to the plane ({exc})",
+                      file=sys.stderr)
         return True, self.rid
 
     def renew(self, key: str | None = None) -> bool:
@@ -635,13 +748,34 @@ class Sync:
         marker.write_text(now_iso())
 
     def release(self, key: str) -> None:
-        if self.adapter.is_lease_authority:
-            self.adapter.log_append(self.log_id("claims"), fmt_line("release", key, self.rid))
-        lock = self.root / STATE_DIR / "leases" / f"{re.sub(r'[^A-Za-z0-9_-]', '-', key)}.lock"
+        lock = self._local_lock(key)
         if lock.exists():
-            lock.unlink()
+            try:
+                if json.loads(lock.read_text()).get("run") in (self.rid, None):
+                    lock.unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                lock.unlink(missing_ok=True)
+        if self.adapter.is_lease_authority:
+            try:
+                self.adapter.log_append(self.log_id("claims"),
+                                        fmt_line("release", key, self.rid))
+            except Fail as exc:
+                print(f"note: released locally, not published ({exc})", file=sys.stderr)
 
     def held(self) -> list[str]:
+        d = self.root / STATE_DIR / "leases"
+        mine = []
+        for q in sorted(d.glob("*.lock") if d.exists() else []):
+            try:
+                h = json.loads(q.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if h.get("run") == self.rid and \
+                    time.time() <= parse_iso(h.get("ts", "")) + int(h.get("ttl", self.ttl)):
+                mine.append(q.stem)
+        return sorted(mine)
+
+    def _held_legacy(self) -> list[str]:
         if not self.adapter.is_lease_authority:
             d = self.root / STATE_DIR / "leases"
             out = []
@@ -748,6 +882,53 @@ class Sync:
             self._set_watermark("signals", len(signals))
 
         return {"others": others, "signals": signals[-limit:], "new_signals": fresh}
+
+    # -- claim tags ---------------------------------------------------------
+
+    def claim_divergence(self) -> list[str]:
+        """Where a held lease and the durable git claim tag disagree.
+
+        DEC-0216 makes the git tag the durable record and the lease the live one, with
+        the run writing the tag through. The tool verifies rather than edits: a process
+        that rewrites a shared registry file on its own is the exact mechanism that
+        clobbers another agent's work, and it would do it from a hook, unattended.
+        So this reports, and the agent writes.
+        """
+        out: list[str] = []
+        tags = self.cfg.get("claimTags") or {}
+        if not tags:
+            return out
+        held = set(self.held())
+        if not held:
+            return out
+        for pattern, spec in tags.items():
+            for path in sorted(self.root.glob(pattern)):
+                if not path.is_file():
+                    continue
+                try:
+                    text = path.read_text()
+                except OSError:
+                    continue
+                rel = path.relative_to(self.root)
+                marker = (spec.get("held") or "").replace("{holder}", self.rid)
+                for key in sorted(held):
+                    if key not in text:
+                        continue
+                    line = next((l for l in text.splitlines() if key in l), "")
+                    if marker and marker in line:
+                        continue
+                    if spec.get("open") and spec["open"] in line:
+                        out.append(f"{rel}: `{key}` still reads `{spec['open']}` while "
+                                   "this run holds the lease — write the claim through")
+                    elif spec.get("open") and spec["open"] in text:
+                        # The tag exists in the file but not on the id's line. The
+                        # configured mapping cannot be verified for this key, and saying
+                        # so beats passing silently — an unverifiable check that reports
+                        # clean is indistinguishable from one that works.
+                        out.append(f"{rel}: cannot verify the claim tag for `{key}` — "
+                                   f"`{spec['open']}` appears in the file but not on that "
+                                   "id's line. Fix claimTags, or write the tag by hand")
+        return out
 
     # -- as-built record and reconciliation ---------------------------------
 
@@ -1154,6 +1335,26 @@ class Sync:
                        "or narrow mirror.sources; they are absent, not up to date")
         return out
 
+    def mirror_drift(self) -> list[str]:
+        """Mirror pages whose stamped commit is not this repository's HEAD.
+
+        The docstring beside `mirror` claimed this gate existed before any code did —
+        prose asserting a check that was never written, which is worse than silence
+        because a reader stops looking.
+        """
+        cfg = self.cfg.get("mirror") or {}
+        if not cfg.get("enabled"):
+            return []
+        sha = head_sha()
+        out: list[str] = []
+        for oid in self.adapter.log_shards("90 Mirror — "):
+            text = self.adapter.doc_get(oid)
+            m = re.search(r"source=[^@]+@(\S+)", text.splitlines()[0] if text else "")
+            if m and m.group(1) != sha:
+                out.append(f"mirror page stamped {m.group(1)}, HEAD is {sha} — "
+                           "regenerate with `board --mirror`")
+        return out
+
     def setup_path(self) -> Path:
         configured = self.cfg.get("setupFile")
         if configured:
@@ -1368,6 +1569,19 @@ def cmd_status(_args: argparse.Namespace) -> int:
     elif act["signals"]:
         print(f"  signals        : {len(act['signals'])} recent, nothing new since you last looked")
 
+    claim_issues = s.claim_divergence()
+    if claim_issues:
+        print("\n  Claim tags not written through:")
+        for c in claim_issues:
+            print(f"    ! {c}")
+
+    try:
+        drift = s.mirror_drift()
+    except Fail:
+        drift = []
+    if drift:
+        print(f"\n  Mirror drift ({len(drift)} page(s)): regenerate with `board --mirror`")
+
     if not pipeline_installed():
         print("\n✗ task-pipeline is not installed. agent-sync binds to its stages and")
         print("  will not improvise a substitute flow.")
@@ -1413,6 +1627,10 @@ def cmd_acquire(args: argparse.Namespace) -> int:
     won, holder = s.acquire(args.key)
     if won:
         print(f"won {args.key} (run {s.rid}, ttl {s.ttl}s)")
+        if not s.adapter.is_exclusive:
+            print(f"⚠ ADVISORY, not exclusive: this backend has no compare-and-swap, so a "
+                  f"contender that started within the {s.settle:g}s settle window may also "
+                  "hold it. Check `status` before destructive work.")
         if not s.gated:
             print("⚠ ungated backend — this lease is advisory, not enforced")
         print("Remember: release it on every path, including failure.")

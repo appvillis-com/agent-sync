@@ -47,38 +47,53 @@ go quiet at once. This is not hypothetical; it is how the bug above stayed invis
 a lost race would name a holder who does not exist and send the caller looking for
 them.
 
-## Acquiring
+## Acquiring — the third design, and the first that is true
 
 ```
-1. append   op=acquire key=<K> run=<R> ttl=<seconds>
-2. wait     250 ms + jitter 0-150 ms
-3. read     log.read, replay from the top
-4. resolve  K's holder is the earliest acquire for K that is at that point
-            neither released nor expired
-5. if holder == R  -> won
-   else            -> lost; append op=release key=<K> run=<R>; back off;
-                      retry at most 3 times, then report and stop
+1. reap     if .agent-sync/leases/<K>.lock exists and is expired, remove it
+2. create   os.open(lock, O_CREAT | O_EXCL) — this is the decision, and it is atomic
+3. lost     FileExistsError -> read the holder out of the file and report it
+4. won      write {run, ts, ttl, repo}; publish op=acquire to the plane for visibility
 ```
 
-Step 5's release on a loss matters: without it the log accumulates acquires that
-replay as contenders forever, and the third agent sees a queue that does not exist.
+**Publishing is not the decision.** A failure to reach the knowledge base costs
+visibility, never correctness: the lock is already held. So the append is wrapped and
+its failure reported, not raised.
 
-Replay is a pure function of the log text. Two agents replaying the same text reach
-the same holder, which is what makes this safe without a lock server.
+### Why not the knowledge base
+
+Two earlier designs failed, and the measurements are worth keeping:
+
+- **One shared append-only document.** Twelve concurrent appends returned twelve
+  successes and left three lines. `editMode: append` reads, appends and writes back, so
+  simultaneous writers clobber each other — and each is told it succeeded. A lease
+  decided on that can be held by two runs, each with proof.
+- **One document per writer.** Loss goes to zero (12/12 land). But the decision needs
+  to know whether a contender is *still writing*, and without compare-and-swap nothing
+  answers that. Eight parallel processes each read only their own shard: **eight winners
+  for one key.** A longer settle window took it to five. It cannot reach one.
+
+`O_EXCL` answers the question the store cannot: twelve processes, one winner, eleven
+losers naming the same holder.
+
+### The limit, stated
+
+A lock file is exclusive between processes on **one filesystem**. Two machines have two
+filesystems and therefore two locks, and the plane's record is then advisory. The tool
+reports which it is; it never implies the stronger one.
 
 ## Expiry and stealing
 
-An `acquire` is expired when `now > ts + ttl` **and** no `renew` for the same
-`(key, run)` appears later in the log.
+A lock is expired when `now > ts + ttl` for the timestamp inside it, refreshed by
+`renew`.
 
 Default `ttl` is 2700 s (45 minutes). `renew` is emitted at most once per
 `renewIntervalSeconds` (default 300 s) — by the `PostToolUse` hook in Claude Code,
 and by the agent itself everywhere else.
 
-**Stealing an expired lease is the ordinary `acquire` path.** There is no separate
-force flag: the replay simply finds the previous holder expired. The steal is
-visible in the log with both run ids, so an operator can always see that it
-happened and when.
+**Stealing an expired lease is the ordinary `acquire` path.** There is no force flag:
+the reap step removes an expired lock and the create proceeds. The steal is visible on
+the plane with both run ids, so an operator can see that it happened and when.
 
 ## Releasing
 
@@ -118,6 +133,10 @@ number, and silently handing it out again would produce two documents with one i
 | Who holds this task **right now** | the lease log | ephemeral, TTL |
 | Who **owns** this task | the git claim tag (`[name]`, `todo (claimed: <role>)`) | durable |
 
-`acquire` writes the git tag through in the same run; `release` clears it. One fact,
-one durable home, one stated derivation. Do not add a third place that records
-ownership — a project with two claim vocabularies has, in practice, none.
+The **run** writes the git tag through — the agent, not the tool. A process that
+rewrites a shared registry on its own is the exact mechanism that clobbers another
+agent's work, and it would do it from a hook, unattended. So the tool **verifies**:
+`status` reports where a held lease and the git tag disagree, and says plainly when the
+configured mapping cannot be checked at all rather than passing silently. Do not add a
+third place that records ownership — a project with two claim vocabularies has, in
+practice, none.

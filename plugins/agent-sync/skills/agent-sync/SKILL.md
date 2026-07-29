@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "0.6.0"
+  version: "1.0.0"
   author: appvillis-com
 ---
 
@@ -21,16 +21,21 @@ keep that true while several agents write at once.
 
 ## Four traps — read these before anything else
 
-**1. No backend offers compare-and-swap.** Outline's `documents.update` has
-`editMode: append|replace|prepend|patch` and **no `lastRevision`**. So a mutable
-table of claims is a race: two agents read it, both write, the second wins and the
-first believes it holds a lease it lost. Never model coordination state as a
-document you rewrite. Append, then read back, and let document order decide.
+**1. The knowledge base cannot arbitrate. Exclusion comes from an atomic file
+create.** Measured, not assumed: twelve concurrent appends to one Outline document
+returned twelve successes and left **three** lines — `editMode: append` reads, appends
+and writes back, so simultaneous writers clobber each other and every one is told it
+succeeded. Sharding per writer stops the loss, and then breaks the *decision*: with no
+compare-and-swap there is no way to know a contender is still writing, so eight
+processes each read only their own shard and **eight of them won one key**. No settle
+window closes that. `O_EXCL` does: one winner out of twelve, every loser naming the
+same holder. The plane still carries the record — it just never decides.
 
-**2. `atomicAppend: false` means you are NOT the lease authority.** If the
-configured adapter cannot append server-side, say so out loud, fall back to
-git-file leases, and mark the run `ungated`. A pretended lease is worse than no
-lease, because the other agent trusts it.
+**2. A lease is exclusive on one machine and advisory across machines.** The lock file
+is a real mutex between processes sharing a filesystem, which is how these agents
+actually run. Two machines have two filesystems and therefore two locks. Say
+`ungated`/advisory out loud where it applies — a pretended lease is worse than no
+lease, because the other agent stops checking.
 
 **3. Hooks exist only in Claude Code.** On Cursor, Codex and every other agent the
 skills CLI serves, there is no `PreToolUse` and nothing blocks a guarded edit. Run
@@ -74,9 +79,12 @@ storage question gets asked and answered, once, and written down.
 **Ask the operator these two things in chat — do not guess, do not pick a default:**
 
 1. **Where should coordination state live?**
-   - a knowledge cloud (`outline`) — real leases, shared across machines;
-   - or local files (`fs`) — no credentials, but **degraded**: not the lease
-     authority, every run recorded `ungated`.
+   - a knowledge cloud (`outline`) — the shared record, awareness and board across
+     machines. **It does not decide leases**; nothing in it can (trap 1);
+   - or local files (`fs`) — no credentials, no shared awareness, every run `ungated`.
+
+   Either way the lease itself is an atomic local lock, exclusive between processes on
+   one filesystem and advisory beyond it.
 2. **If cloud: the instance URL.** The URL is configuration, not a secret, so you
    may write it. The **token is not** — you never ask for it in chat, never read it
    back, and never place it yourself.
