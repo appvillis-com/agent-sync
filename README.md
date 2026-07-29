@@ -282,19 +282,24 @@ configuration defect.
 
 ## Backends
 
-The knowledge store is a **pluggable adapter** — six primitives, three declared
-capabilities. Nothing about a specific vendor is baked in, and no instance address ships
-in this repository.
+**Two settings, two jobs.** `backend` chooses the record plane — where the log, the
+signals and the board live. `leaseBackend` chooses what actually decides a lease. The
+knowledge base is never the second one: measured against a real instance, twelve
+concurrent appends to one document returned twelve successes and left three lines.
 
-| Backend | Lease authority | Notes |
-|---|---|---|
-| `outline` | yes | [Outline](https://www.getoutline.com), hosted or self-hosted. Server-side append gives a total order without compare-and-swap |
-| `fs` | no — **degraded** | Local files. Real mutual exclusion between agents on one machine, none across machines. Every run is recorded `ungated` |
+| `backend` — the record plane | What it gives |
+|---|---|
+| `outline` | [Outline](https://www.getoutline.com), hosted or self-hosted. Every repository and machine reads one plane: shared awareness, cross-repo signals, the board |
+| `fs` | Local files. No credentials, and no visibility to an agent on another machine |
 
-**A backend that cannot arbitrate says so.** When the adapter is not the lease authority,
-`agent-sync` announces it, falls back to git-file leases, and marks runs `ungated` —
-because a lease that is not actually exclusive is worse than none, and the other agent
-has stopped checking.
+| `leaseBackend` — the lease | Guarantee |
+|---|---|
+| `git` | **Exclusive across machines.** The remote's non-fast-forward rejection is a real compare-and-swap |
+| `local` *(default)* | **Exclusive on this machine, advisory across machines.** An atomic file create |
+
+`status`, `acquire` and `check` all state which of the two you have, in the same words,
+because a lease that is not actually exclusive is worse than none: the other agent has
+stopped checking. `runs recorded: gated` follows the lease mode — never the record plane.
 
 Adding one: read
 [`references/adapter-contract.md`](plugins/agent-sync/skills/agent-sync/references/adapter-contract.md).
@@ -331,15 +336,18 @@ board at docs, release everything at acceptance. Wiring:
   expire one. Agents' clocks differ and the protocol does not depend on them.
 - **A reserved id that never reaches git is reported, not reclaimed.** A half-written
   decision on a branch is not an unused number.
-- **`fs` is not cross-machine.** It is a real mutex between agents on one host and
-  nothing more, which is why it never claims lease authority.
+- **`fs` is not cross-machine.** As a record plane it is invisible to agents on another
+  host, and the default `local` lease is a mutex on this one. Set `leaseBackend: "git"`
+  when a fleet spans machines; the tool says which guarantee you have rather than
+  implying the stronger one.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
 | `task-pipeline is not installed` and `status` stops | Intentional — there are no stages to bind to. `npx sshlg-skills install` |
-| `⚠ ungated backend — this lease is advisory` | The `fs` backend, or missing credentials. Expected; configure `outline` for enforced leases |
+| `⚠ this lease is advisory, not enforced` | `gated: false` in the config, or a `leaseBackend` that is neither `local` nor `git`. Fix the mode — an unknown one claims nothing on purpose |
+| `lease: local — advisory across machines` | Expected on the default. Set `leaseBackend: "git"` (and a reachable `leaseRemote`) when agents run on more than one machine |
 | Every `acquire` reports `lost` | Check the holder in `status`. If the log itself is unreadable, `acquire` raises instead — that is a parse failure, not a race |
 | Guarded edit blocked in Claude Code | Working as designed: `acquire` the key first, or unstage the file |
 | Guarded edit *not* blocked | You are not on Claude Code. Run `guard <path>` yourself; the run is `ungated` |

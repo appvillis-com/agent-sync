@@ -11,6 +11,7 @@ Run:  python3 test/validate.py
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -241,6 +242,14 @@ def check_version_sync() -> tuple[bool, str]:
     m = re.search(r"^##\s*\[?v?(\d+\.\d+\.\d+)\]?", changelog, re.M)
     versions["CHANGELOG.md"] = m.group(1) if m else "MISSING"
 
+    # The number the tool prints about itself. Left out of this check until 1.2.4, it
+    # drifted a release behind and every `status` header reported the wrong version —
+    # the exact number the README tells an operator to compare when hunting a stale
+    # install channel.
+    script = (ROOT / "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py").read_text()
+    m = re.search(r'^VERSION\s*=\s*"(\d+\.\d+\.\d+)"', script, re.M)
+    versions["agent_sync.py"] = m.group(1) if m else "MISSING"
+
     for skill in sorted((ROOT / "plugins" / "agent-sync" / "skills").glob("*")):
         if skill.is_dir():
             v = check_skill(skill)
@@ -357,6 +366,66 @@ def check_hooks_manifest() -> None:
                     err(f"hooks.json/{event}: command target {m.group(1)} does not exist")
 
 
+def check_lease_report_agrees() -> None:
+    """Every surface that reports what a lease is worth must say the same thing.
+
+    `status` called the *record* adapter the "lease authority" — a role the knowledge
+    base has not held since 1.0.0, when exclusion moved to a lock the store cannot
+    lose — while `acquire` and `check` described the lease mode. One guarantee phrased
+    two ways reads as two guarantees, and an operator acts on the weaker one. So the
+    wording lives in one table and this exercises all three commands against it.
+    """
+    if not shutil.which("git"):
+        notes.append("git not found — lease reporting check skipped")
+        return
+    script = ROOT / "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py"
+    spec = importlib.util.spec_from_file_location("agent_sync_under_test", script)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as exc:                                   # noqa: BLE001
+        err(f"scripts/agent_sync.py: cannot be imported ({exc})")
+        return
+    if not hasattr(mod, "lease_guarantee"):
+        err("scripts/agent_sync.py: no lease_guarantee() — the wording has no single home")
+        return
+
+    for mode in ("local", "git"):
+        phrase = mod.lease_guarantee(mode)[0]
+        with tempfile.TemporaryDirectory() as project:
+            env = {**os.environ, "AGENT_SYNC_RUN_ID": "validator"}
+            run = lambda *a, **kw: subprocess.run(  # noqa: E731
+                [sys.executable, str(script), *a], cwd=project, env=env,
+                capture_output=True, text=True, timeout=60, **kw)
+            for argv in (["git", "init", "-q"],
+                         ["git", "-c", "user.email=v@e", "-c", "user.name=v",
+                          "commit", "-q", "--allow-empty", "-m", "init"]):
+                subprocess.run(argv, cwd=project, capture_output=True)
+            if mode == "git":
+                remote = Path(project) / ".remote.git"
+                subprocess.run(["git", "init", "-q", "--bare", str(remote)],
+                               capture_output=True)
+                subprocess.run(["git", "remote", "add", "origin", str(remote)],
+                               cwd=project, capture_output=True)
+            if run("init", "--backend", "fs").returncode != 0:
+                err(f"lease reporting [{mode}]: init failed")
+                continue
+            cfg_path = Path(project) / ".claude" / "agent-sync.json"
+            cfg = json.loads(cfg_path.read_text())
+            cfg["leaseBackend"] = mode
+            cfg_path.write_text(json.dumps(cfg, indent=2))
+
+            for command in (["status"], ["acquire", "VAL-1"], ["check"]):
+                out = run(*command)
+                text = out.stdout + out.stderr
+                if phrase not in text:
+                    err(f"lease reporting [{mode}]: `{command[0]}` does not state the "
+                        f"guarantee '{phrase}' — surfaces disagree about what a lease is worth")
+                if command[0] == "status" and "lease authority" in text:
+                    err("lease reporting: `status` still calls the record backend the "
+                        "lease authority; it has not decided a lease since 1.0.0")
+
+
 def check_hooks_noop_without_config() -> None:
     """Installed globally, every hook must do nothing in an unconfigured project.
 
@@ -413,6 +482,7 @@ def main() -> int:
     check_scripts_run()
     check_hooks_manifest()
     check_hooks_noop_without_config()
+    check_lease_report_agrees()
 
     for n in notes:
         print(f"note: {n}")
@@ -446,6 +516,18 @@ def self_test() -> int:
                                             % ("https", "wiki", "internal-corp.example"))),
         "token in argv": ("plugins/agent-sync/skills/agent-sync/references/backend-fs.md",
                           lambda t: t + '\n```bash\ncurl -H "Authorization: Bearer $T" x\n```\n'),
+        # The 1.2.3 defect itself: the manifests move, the tool keeps announcing the
+        # version before them.
+        "script version drift": ("plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py",
+                                 lambda t: re.sub(r'^VERSION\s*=\s*"\d+\.\d+\.\d+"',
+                                                  'VERSION = "9.9.9"', t, count=1, flags=re.M)),
+        # And the other half: one surface quietly returns to describing the record
+        # backend as the thing that decides a lease.
+        "lease wording drift": ("plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py",
+                                lambda t: t.replace(
+                                    '    print(f"  lease          : {s.lease_mode} — {headline}")',
+                                    '    print(f"  lease authority: '
+                                    '{\'yes\' if ad.is_lease_authority else \'no\'}")')),
         "stray SKILL.md": (None, None),
     }
     original_root = ROOT

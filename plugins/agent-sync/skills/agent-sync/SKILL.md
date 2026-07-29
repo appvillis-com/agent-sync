@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.2.3"
+  version: "1.2.4"
   author: appvillis-com
 ---
 
@@ -107,10 +107,13 @@ storage question gets asked and answered, once, and written down.
 1. **Where should coordination state live?**
    - a knowledge cloud (`outline`) — the shared record, awareness and board across
      machines. **It does not decide leases**; nothing in it can (trap 1);
-   - or local files (`fs`) — no credentials, no shared awareness, every run `ungated`.
+   - or local files (`fs`) — no credentials, and no visibility to an agent on another
+     machine: no shared awareness, no cross-repo signals, no shared board.
 
    The lease is decided separately by `leaseBackend` — `git` for cross-machine exclusion,
-   `local` otherwise.
+   `local` otherwise — and **`gated` follows that choice, never the record plane**. `fs`
+   with a local lock is still real exclusion between the agents on this machine; `outline`
+   with a local lock is *not* exclusion across them. Report the one you actually have.
 2. **If cloud: the instance URL.** The URL is configuration, not a secret, so you
    may write it. The **token is not** — you never ask for it in chat, never read it
    back, and never place it yourself.

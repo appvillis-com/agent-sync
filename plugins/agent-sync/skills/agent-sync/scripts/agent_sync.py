@@ -32,12 +32,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.2.2"
+VERSION = "1.2.4"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
 STATE_DIR = Path(".agent-sync")
 GENERATED_MARKER = "<!-- agent-sync:generated"
+
+# What a won lease is actually worth, in one place. Six surfaces used to phrase this
+# independently and two of them named the knowledge base as the authority — a role it
+# has not held since 1.0.0, when exclusion moved to a primitive the store cannot lose.
+# One guarantee described two ways reads as two guarantees, and an operator acts on the
+# weaker one.
+LEASE_GUARANTEE = {
+    "git": ("exclusive across machines",
+            "the remote's non-fast-forward rejection is a real compare-and-swap"),
+    "local": ("exclusive on this machine, advisory across machines",
+              'set `leaseBackend: "git"` if agents run on more than one'),
+}
+
+
+def lease_guarantee(mode: str) -> tuple[str, str]:
+    """The headline and the detail for a lease mode. Unknown modes claim nothing."""
+    return LEASE_GUARANTEE.get(
+        mode, ("NOT a lease — unknown mode, treat this project as unprotected",
+               f"'{mode}' is not a known leaseBackend; only {' or '.join(LEASE_GUARANTEE)}"))
+
 
 LOGS = {
     "claims": "30 Claims",
@@ -615,7 +635,15 @@ class Sync:
 
     @property
     def gated(self) -> bool:
-        return bool(self.cfg.get("gated", True)) and self.adapter.is_lease_authority
+        """Whether exclusion is real — decided by the lease mode, never by the record.
+
+        Until 1.2.4 this read the record adapter's capabilities, which stopped deciding
+        leases in 1.0.0. Both directions were wrong: `outline` with a local lock reported
+        `gated` while exclusion was machine-local, and `fs` with git refs reported
+        `ungated` while every lease was a genuine cross-machine compare-and-swap. The
+        plane carries the record; `leaseBackend` decides the lease.
+        """
+        return bool(self.cfg.get("gated", True)) and self.lease_mode in LEASE_GUARANTEE
 
     def log_id(self, which: str) -> str:
         """This run's OWN shard. One writer per document, always.
@@ -1377,8 +1405,8 @@ class Sync:
             "Every repository on this plane writes and reads this page. It carries only "
             "facts that are true from any of them.",
             "",
-            f"- backend: `{self.adapter.name}` · lease authority: "
-            f"**{'yes' if self.adapter.is_lease_authority else 'no'}**",
+            f"- record plane: `{self.adapter.name}` · lease: `{self.lease_mode}` — "
+            f"**{lease_guarantee(self.lease_mode)[0]}**",
             f"- runs are recorded as **{'gated' if self.gated else 'ungated'}**",
             f"- unparseable log lines: {bad}/{total}"
             f"{'  ⚠ over 2% — the log cannot be replayed reliably' if bad / total > 0.02 else ''}",
@@ -1446,8 +1474,8 @@ class Sync:
             "",
             "## This project's wiring",
             "",
-            f"- backend: **{self.adapter.name}** · lease authority: "
-            f"**{'yes' if self.adapter.is_lease_authority else 'NO — degraded'}** · runs recorded "
+            f"- record plane: **{self.adapter.name}** · lease: **{self.lease_mode}** — "
+            f"{lease_guarantee(self.lease_mode)[0]} · runs recorded "
             f"**{'gated' if self.gated else 'ungated'}**",
             f"- lease TTL {cfg.get('leaseTtlSeconds', DEFAULT_TTL)}s, renewed every "
             f"{cfg.get('renewIntervalSeconds', DEFAULT_RENEW)}s",
@@ -1687,8 +1715,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("  The token is yours alone: do not paste it into a chat, a commit, "
               "or a command line.")
     else:
-        print("Backend 'fs' needs no credentials. It is DEGRADED: it is not the lease")
-        print("authority, and every run is recorded as `ungated`. See references/backend-fs.md.")
+        print("Backend 'fs' needs no credentials. It is the record plane only, and a")
+        print("local one: agents on another machine see none of this project's leases,")
+        print("signals or board. The lease itself is decided by `leaseBackend` —")
+        print(f"default `local`, which is {lease_guarantee('local')[0]}.")
+        print("See references/backend-fs.md.")
     return 0
 
 
@@ -1739,14 +1770,18 @@ def cmd_status(_args: argparse.Namespace) -> int:
 
     s = Sync()
     ad = s.adapter
-    print(f"  backend        : {ad.name}")
-    print(f"  lease authority: {'yes' if ad.is_lease_authority else 'NO — degraded'}")
+    headline, detail = lease_guarantee(s.lease_mode)
+    print(f"  record plane   : {ad.name}"
+          f"{'' if ad.is_lease_authority else ' — local only, not shared between machines'}")
+    print(f"  lease          : {s.lease_mode} — {headline}")
     print(f"  runs recorded  : {'gated' if s.gated else 'UNGATED'}")
     print(f"  run id         : {s.rid}")
 
-    if not ad.is_lease_authority:
-        print("\n⚠ This backend cannot hold leases exclusively, so nothing here is")
-        print("  enforced. Do not describe this project as protected.")
+    if not s.gated:
+        print("\n⚠ Nothing here is enforced. Do not describe this project as protected.")
+        print(f"  {detail}")
+    elif not s.lease_is_cross_machine:
+        print(f"  ({detail})")
 
     if ad.name == "outline" and isinstance(ad, OutlineAdapter) and not ad.collection:
         print("\n✗ AGENT_SYNC_OUTLINE_COLLECTION is empty.")
@@ -1846,15 +1881,11 @@ def cmd_acquire(args: argparse.Namespace) -> int:
     s = Sync()
     won, holder = s.acquire(args.key)
     if won:
+        headline, detail = lease_guarantee(s.lease_mode)
         print(f"won {args.key} (run {s.rid}, ttl {s.ttl}s)")
-        if s.lease_is_cross_machine:
-            print("  exclusive across machines — the remote's non-fast-forward rule is a "
-                  "real compare-and-swap")
-        else:
-            print("  exclusive between agents on THIS machine; advisory across machines. "
-                  "Set `leaseBackend: \"git\"` for cross-machine exclusion.")
+        print(f"  {headline} — {detail}")
         if not s.gated:
-            print("⚠ ungated backend — this lease is advisory, not enforced")
+            print("⚠ this lease is advisory, not enforced")
         print("Remember: release it on every path, including failure.")
         return 0
     print(f"lost {args.key} — held by {holder or 'another run'}")
@@ -2225,18 +2256,19 @@ def cmd_check(_args: argparse.Namespace) -> int:
         ok.append(f"{len(cfg['claimTags'])} claim-tag mapping(s) declared")
 
     mode = cfg.get("leaseBackend") or "local"
-    if mode not in ("local", "git"):
-        problems.append(f"leaseBackend '{mode}' is not a known mode")
+    headline, detail = lease_guarantee(mode)
+    if mode not in LEASE_GUARANTEE:
+        problems.append(f"leaseBackend '{mode}': {headline} — {detail}")
     elif mode == "git":
         remote = cfg.get("leaseRemote") or "origin"
         if not git("remote", "get-url", remote):
             problems.append(f"leaseBackend is 'git' but remote '{remote}' does not exist — "
-                            "the lease cannot be decided at all")
+                            f"the lease cannot be decided at all ({headline} claimed, "
+                            "none delivered)")
         else:
-            ok.append(f"lease decided by git refs on '{remote}' — exclusive across machines")
+            ok.append(f"lease decided by git refs on '{remote}' — {headline}")
     else:
-        warn.append("lease is a local file lock: exclusive on this machine, advisory "
-                    "across machines. Set leaseBackend to 'git' if agents run on more than one")
+        warn.append(f"lease is a local file lock: {headline}. {detail[0].upper()}{detail[1:]}")
 
     for cmd in (cfg.get("gates") or []):
         exe = cmd.split()[0]

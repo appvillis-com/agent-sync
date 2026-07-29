@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.4 — 2026-07-29
+
+### Fixed — the tool misreported its own version, and disagreed with itself about the lease
+- **`VERSION` drifted a release behind.** The constant said `1.2.2` while every manifest
+  said `1.2.3`, so each `status` and `adopt` header named the wrong version — the exact
+  number the README tells an operator to compare when hunting a stale install channel.
+  `check_version_sync()` read five manifests and not the script; `check_scripts_run()` ran
+  `--version` only to prove the process starts, and threw the answer away. The constant is
+  now part of the sync check, so this cannot drift silently again.
+- **`gated` was decided by the record backend, which has not decided a lease since 1.0.0.**
+  It read the adapter's `atomicAppend`/`totalOrderRead` capabilities, and both directions
+  lied: `outline` with a local lock reported `gated` while exclusion was machine-local —
+  the pretended lease the skill's own trap 2 warns about — and `fs` with git refs reported
+  `ungated` while every lease was a genuine cross-machine compare-and-swap. It now derives
+  from `leaseBackend`.
+- **Six surfaces phrased the guarantee independently, and two called the knowledge base
+  the "lease authority".** `status` said `lease authority: NO — degraded` for the same
+  project where `check` said `exclusive on this machine` and `acquire` said something else
+  again. One guarantee described three ways reads as three guarantees, and an operator acts
+  on the weakest. The wording now lives in one table (`lease_guarantee()`), used by
+  `status`, `acquire`, `check`, the board, the setup snapshot and `init`. `status` reports
+  the record plane and the lease as the separate facts they are.
+
+### Added
+- **`test/validate.py` exercises the agreement**: for `leaseBackend` `local` and `git` it
+  runs `status`, `acquire` and `check` against a throwaway repository (a real bare remote
+  for `git`) and fails if any of them omits the guarantee, or if `status` still calls the
+  record backend the lease authority. Verified red against 1.2.3, green after.
+
 ## 1.2.3 — 2026-07-29
 
 ### Fixed — the guard blocked commits in projects that never installed agent-sync
