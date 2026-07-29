@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.1 — 2026-07-29
+
+### The git lease was invisible to everything that reads a lease — fixed
+
+Found in production, blocking real work three times in one session. In `git` lease mode `acquire`
+won the lease by pushing `refs/agent-sync/leases/<key>` and stopped there, while `held()` — the one
+function behind `whoami`, `status` and the **PreToolUse guard** — read `.agent-sync/leases/*.lock`,
+which nothing in that path ever wrote. The result was the exact inversion of the tool's purpose:
+`acquire` printed *won*, `whoami` printed *holds: nothing*, and the guard **denied the run that held
+the lease**. Every guarded register was unwritable under the mode this tool recommends, and the only
+way past it was to bypass the guard — which is the behaviour the guard exists to prevent.
+
+The git ref remains the authority; it is what makes exclusion hold across machines. What was missing
+is that the winner now leaves a local note, so the local question — *does this run hold that key?* —
+is answered locally instead of putting a network round-trip in front of every Edit. `release`
+already removed that note, which is why only one half of the loop was ever written.
+
+**Why it shipped:** the lease-visibility assertion existed only for the local mode. `test/validate.py`
+now runs acquire → `whoami` → `guard` → release against **both** modes; against 1.3.0 it fails with
+the two symptoms above, which is the point of adding it.
+
 ## 1.3.0 — 2026-07-29
 
 ### Two agents in one checkout were one identity — fixed

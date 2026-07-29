@@ -426,6 +426,60 @@ def check_lease_report_agrees() -> None:
                         "lease authority; it has not decided a lease since 1.0.0")
 
 
+def check_lease_held_is_visible() -> None:
+    """A lease this run won must be visible to `whoami` and to the guard — in EVERY mode.
+
+    This existed only for the local mode, and the git mode shipped broken because of it: the
+    winner pushed a ref and `held()` read a lock directory that nothing in that path wrote, so
+    `acquire` said "won", `whoami` said "holds: nothing", and the PreToolUse guard denied the very
+    run holding the lease. Every guarded register was unwritable under the mode the tool
+    recommends. The bug was invisible because the mode-agnostic assertion did not exist, so this
+    check runs the same three steps against both modes and is the reason to keep it that way.
+    """
+    if not shutil.which("git"):
+        notes.append("git not found — lease visibility check skipped")
+        return
+    script = ROOT / "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py"
+
+    for mode in ("local", "git"):
+        with tempfile.TemporaryDirectory() as project:
+            env = {**os.environ, "AGENT_SYNC_RUN_ID": "validator"}
+            run = lambda *a: subprocess.run(  # noqa: E731
+                [sys.executable, str(script), *a], cwd=project, env=env,
+                capture_output=True, text=True, timeout=60)
+            for argv in (["git", "init", "-q"],
+                         ["git", "-c", "user.email=v@e", "-c", "user.name=v",
+                          "commit", "-q", "--allow-empty", "-m", "init"]):
+                subprocess.run(argv, cwd=project, capture_output=True)
+            if mode == "git":
+                remote = Path(project) / ".remote.git"
+                subprocess.run(["git", "init", "-q", "--bare", str(remote)], capture_output=True)
+                subprocess.run(["git", "remote", "add", "origin", str(remote)],
+                               cwd=project, capture_output=True)
+            if run("init", "--backend", "fs").returncode != 0:
+                err(f"lease visibility [{mode}]: init failed")
+                continue
+            cfg_path = Path(project) / ".claude" / "agent-sync.json"
+            cfg = json.loads(cfg_path.read_text())
+            cfg["leaseBackend"] = mode
+            cfg["guardedFiles"] = ["docs/GUARDED.md"]
+            cfg_path.write_text(json.dumps(cfg, indent=2))
+
+            acquired = run("acquire", "VIS-1")
+            if "won" not in (acquired.stdout + acquired.stderr):
+                err(f"lease visibility [{mode}]: acquire did not report a win")
+                continue
+            if "VIS-1" not in run("whoami").stdout:
+                err(f"lease visibility [{mode}]: acquire won VIS-1 but `whoami` does not hold it — "
+                    "the path that writes the lease and the path that reads it disagree")
+            if run("guard", "docs/GUARDED.md").returncode != 0:
+                err(f"lease visibility [{mode}]: the guard denies a guarded file to the run that "
+                    "holds its lease — every guarded write is impossible in this mode")
+            run("release", "VIS-1")
+            if "VIS-1" in run("whoami").stdout:
+                err(f"lease visibility [{mode}]: `whoami` still holds VIS-1 after release")
+
+
 def check_hooks_noop_without_config() -> None:
     """Installed globally, every hook must do nothing in an unconfigured project.
 
@@ -483,6 +537,7 @@ def main() -> int:
     check_hooks_manifest()
     check_hooks_noop_without_config()
     check_lease_report_agrees()
+    check_lease_held_is_visible()
 
     for n in notes:
         print(f"note: {n}")

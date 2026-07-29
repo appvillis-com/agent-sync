@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -775,6 +775,27 @@ class Sync:
         except (json.JSONDecodeError, ValueError):
             return sha, {}
 
+    def _note_local(self, key: str, payload: str) -> None:
+        """Record locally that THIS run won THIS key here.
+
+        The git ref is the authority and stays so — it is what makes the lease exclusive across
+        machines. But `held()`, `whoami`, `status` and the PreToolUse guard all ask a *local*
+        question: does this run hold that key? Answering it by reading the remote would put a
+        network round-trip in front of every single Edit. So the winner leaves a note, and
+        `release()` — which already removes it — closes the loop.
+
+        Without this the guard denied the run that held the lease: `acquire` wrote a ref, `held()`
+        read a directory nothing had written, and every guarded file became unwritable in git mode.
+        """
+        lock = self._local_lock(key)
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(payload)
+        except OSError as exc:
+            # Never fatal: the lease is already won on the remote, which is the part that matters.
+            print(f"note: lease won but not noted locally ({exc})", file=sys.stderr)
+
     def _git_acquire(self, key: str) -> tuple[bool, str | None]:
         """Push a ref that must not already exist. The remote's non-fast-forward rule
         IS the compare-and-swap — verified against a hosted remote, not assumed."""
@@ -782,6 +803,7 @@ class Sync:
         held_sha, held = self._git_read_lease(key)
         if held:
             if held.get("run") == self.rid:
+                self._note_local(key, json.dumps(held))
                 self._touch_renew()
                 return True, self.rid
             alive = time.time() <= parse_iso(held.get("ts", "")) + int(held.get("ttl", self.ttl))
@@ -804,6 +826,7 @@ class Sync:
             # Rejected: somebody won between our read and our push. Ask who.
             _s, now_held = self._git_read_lease(key)
             return False, now_held.get("run") or "another run"
+        self._note_local(key, payload)
         self._touch_renew()
         return True, self.rid
 
