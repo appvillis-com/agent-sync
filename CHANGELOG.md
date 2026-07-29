@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.0.1 — 2026-07-29
+
+### Fixed
+- **A rate-limited knowledge base stopped the work, not just the record.** `journal`, `record`
+  and `signal` raised when the store was unreachable or throttling, so a burst of shard creation
+  could fail a run outright. The plane carries visibility, not correctness: publishing now
+  reports the gap loudly and lets the caller continue. Swallowing it would hide a hole in the
+  record; raising made an availability dependency out of a notebook.
+- Retries widened to seven attempts for `429` and transient `5xx`, which is what a burst of
+  document creation actually needs.
+- Run journals moved to the shard naming scheme (`20 Runs — <run>`) so they are enumerated like
+  every other log.
+
 ## 1.0.0 — 2026-07-29
 
 A full audit of the running system against its own promises. Three surfaces were

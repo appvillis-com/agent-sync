@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -309,7 +309,7 @@ class OutlineAdapter(Adapter):
         req.add_header("Accept", "application/json")
 
         delay = 1.0
-        for attempt in range(5):
+        for attempt in range(7):
             try:
                 with urllib.request.urlopen(req, timeout=20) as resp:
                     data = json.loads(resp.read().decode())
@@ -332,7 +332,7 @@ class OutlineAdapter(Adapter):
                         f"{': ' + detail if detail else ''}. "
                         "A credential does not become valid on retry.") from exc
                 # 429 and transient 5xx deserve a retry; 401/403 never will.
-                if exc.code in (429, 500, 502, 503, 504) and attempt < 4:
+                if exc.code in (429, 500, 502, 503, 504) and attempt < 6:
                     time.sleep(float(exc.headers.get("Retry-After") or delay)
                                + random.random() * 0.4)
                     delay *= 2
@@ -345,7 +345,7 @@ class OutlineAdapter(Adapter):
                     delay *= 2
                     continue
                 raise Fail(f"outline {endpoint}: cannot reach the instance ({exc.reason})") from exc
-        raise Fail(f"outline {endpoint}: gave up after 5 attempts")
+        raise Fail(f"outline {endpoint}: gave up after 7 attempts")
 
     def resolve_collection(self) -> str:
         """Accept a UUID, a urlId, or the whole `name-urlId` slug from the browser.
@@ -834,17 +834,37 @@ class Sync:
 
     # -- journal / signals -------------------------------------------------
 
+    def _publish(self, which: str, line: str) -> bool:
+        """Write to the plane, and never let that failure destroy the caller's work.
+
+        The plane carries visibility, not correctness. A rate limit or an outage must
+        surface loudly and leave the run able to continue — swallowing it would hide a
+        gap in the record, and raising would make a knowledge base an availability
+        dependency of doing any work at all.
+        """
+        try:
+            self.adapter.log_append(self.log_id(which), line)
+            return True
+        except Fail as exc:
+            print(f"agent-sync: NOT published to the plane ({exc}). The work stands; "
+                  "the record has a gap — re-run this step when the store is reachable.",
+                  file=sys.stderr)
+            return False
+
     def journal(self, text: str) -> None:
-        oid = self.adapter.tree_ensure(f"20 Runs/{self.rid}")
-        self.adapter.log_append(oid, fmt_line(
-            "journal", self.rid, self.rid, sha=head_sha(),
-            note=text.replace("`", "'")[:400]))
+        try:
+            oid = self.adapter.tree_ensure(f"20 Runs — {self.rid}")
+            self.adapter.log_append(oid, fmt_line(
+                "journal", self.rid, self.rid, sha=head_sha(),
+                note=text.replace("`", "'")[:400]))
+        except Fail as exc:
+            print(f"agent-sync: journal NOT published ({exc})", file=sys.stderr)
 
     def signal(self, dep: str, state: str) -> None:
         allowed = {"filed", "accepted", "delivered", "closed", "refused"}
         if state not in allowed:
             raise Fail(f"state must be one of {sorted(allowed)}")
-        self.adapter.log_append(self.log_id("signals"), fmt_line(
+        self._publish("signals", fmt_line(
             "signal", dep, self.rid, state=state, repo=repo_name(), sha=head_sha()))
 
     # -- awareness ---------------------------------------------------------
@@ -934,7 +954,7 @@ class Sync:
 
     def record(self, text: str, decision: str = "", files: str = "") -> None:
         """Append what was ACTUALLY built. Not a plan, not an intention."""
-        self.adapter.log_append(self.log_id("asbuilt"), fmt_line(
+        self._publish("asbuilt", fmt_line(
             "asbuilt", decision or "-", self.rid, repo=repo_name(), sha=head_sha(),
             files=files.replace("`", "'")[:200],
             note=text.replace("`", "'")[:400]))
