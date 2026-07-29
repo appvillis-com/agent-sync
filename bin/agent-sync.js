@@ -46,6 +46,7 @@ ${C.bold('agent-sync')} — coordination for concurrent agents
   npx ${NAME} install              install for Claude Code and other agents
   npx ${NAME} install --claude-only  Claude Code plugin only
   npx ${NAME} install --agent a,b    pick agents for the skills CLI
+  npx ${NAME} update               update every channel, then prune the shadow
   npx ${NAME} --help
 
 After installing, initialise the project — this is the step that asks where
@@ -87,11 +88,7 @@ function install(argv) {
     ok = run('npx', args) && ok;
   }
 
-  // Prune the shadow the skills CLI recreates even when claude-code was not targeted.
-  if (!noClaude && fs.existsSync(SHADOW)) {
-    fs.rmSync(SHADOW, { recursive: true, force: true });
-    console.log(C.dim(`\n  pruned duplicate ${SHADOW}`));
-  }
+  pruneShadow();
 
   console.log(
     ok
@@ -105,11 +102,48 @@ It will ask where coordination state should live before writing anything.
   return ok ? 0 : 1;
 }
 
+/**
+ * The shadow regrows on its own: `npx skills add|update --global` auto-detects
+ * Claude Code and recreates ~/.claude/skills/<name> — often as a symlink — even when
+ * claude-code was never named as a target. That copy shadows the plugin and serves a
+ * stale skill, so the prune belongs INSIDE every command that touches the skills CLI,
+ * not in a human's memory. lstatSync, because a symlink shadows exactly as a dir does.
+ */
+function pruneShadow() {
+  let present = false;
+  try {
+    fs.lstatSync(SHADOW);
+    present = true;
+  } catch {
+    /* not there */
+  }
+  if (!present) return;
+  fs.rmSync(SHADOW, { recursive: true, force: true });
+  console.log(C.dim(`  pruned duplicate ${SHADOW}`));
+}
+
+function update() {
+  console.log(C.bold('\nUpdating every channel'));
+  let ok = true;
+  if (has('claude')) {
+    ok = run('claude', ['plugin', 'marketplace', 'update', NAME]) && ok;
+    // The full <name>@<name> id is required; `claude plugin update <name>` answers
+    // "Plugin not found".
+    ok = run('claude', ['plugin', 'update', `${NAME}@${NAME}`]) && ok;
+  }
+  ok = run('npx', ['--yes', 'skills', 'update', NAME, '--global', '--yes']) && ok;
+  pruneShadow();
+  console.log(ok ? C.green('\n✓ updated') : C.red('\n✗ a channel failed — see above'));
+  console.log('\nRestart Claude Code so it picks the new version up.');
+  return ok ? 0 : 1;
+}
+
 const argv = process.argv.slice(2);
 if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
   usage();
   process.exit(0);
 }
 if (argv[0] === 'install') process.exit(install(argv.slice(1)));
+if (argv[0] === 'update') process.exit(update());
 usage();
 process.exit(1);

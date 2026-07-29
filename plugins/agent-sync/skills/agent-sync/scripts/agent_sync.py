@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -42,6 +42,12 @@ LOGS = {
     "reservations": "40 Reservations",
     "signals": "50 Signals",
     "blockers": "60 Blockers",
+    # The as-built record: what agents actually implemented, as they implemented it.
+    # Git documentation says how it SHOULD be — written before the code and often
+    # without it. This says how it IS, derived from what was really written. They are
+    # two source-of-truths answering two different questions, and the gap between them
+    # is the finding, not a defect in either.
+    "asbuilt": "70 As-built",
 }
 
 # Write with "- ", read any bullet. A knowledge base normalises markdown on the way
@@ -387,16 +393,20 @@ def parse_log(text: str) -> tuple[list[dict[str, str]], int]:
     return events, bad
 
 
-def resolve_holder(events: list[dict[str, str]], key: str, at: float) -> str | None:
+def resolve_holding(events: list[dict[str, str]], key: str, at: float) -> dict[str, Any] | None:
     """Replay: the holder is the earliest acquire for key that is, at this point,
-    neither released nor expired. Pure function of the log text."""
+    neither released nor expired. Pure function of the log text.
+
+    Returns the holding record — run, repo and when it was taken — because a caller
+    that only learns *that* a key is held cannot tell an agent where to look."""
     live: list[dict[str, Any]] = []
     for ev in events:
         if ev["key"] != key:
             continue
         if ev["op"] == "acquire":
             live.append({"run": ev["run"], "ts": parse_iso(ev["ts"]),
-                         "ttl": int(ev.get("ttl") or DEFAULT_TTL)})
+                         "ttl": int(ev.get("ttl") or DEFAULT_TTL),
+                         "repo": ev.get("repo", "")})
         elif ev["op"] == "release":
             live = [h for h in live if h["run"] != ev["run"]]
         elif ev["op"] == "renew":
@@ -405,8 +415,13 @@ def resolve_holder(events: list[dict[str, str]], key: str, at: float) -> str | N
                     h["ts"] = parse_iso(ev["ts"])
     for h in live:
         if at <= h["ts"] + h["ttl"]:
-            return str(h["run"])
+            return h
     return None
+
+
+def resolve_holder(events: list[dict[str, str]], key: str, at: float) -> str | None:
+    h = resolve_holding(events, key, at)
+    return str(h["run"]) if h else None
 
 
 def resolve_reservations(events: list[dict[str, str]], reg: str) -> tuple[int, list[int], list[tuple[str, int]]]:
@@ -632,7 +647,7 @@ class Sync:
         others is merely blocked by them: it learns a task is taken and nothing
         about who has it, what they are touching, or what landed while it was away.
         """
-        others = {k: v for k, v in self.all_holders().items() if v != self.rid}
+        others = {k: v for k, v in self.all_holdings().items() if v["run"] != self.rid}
 
         signals, _ = self.events("signals")
         seen = self._watermark("signals")
@@ -641,6 +656,115 @@ class Sync:
             self._set_watermark("signals", len(signals))
 
         return {"others": others, "signals": signals[-limit:], "new_signals": fresh}
+
+    # -- as-built record and reconciliation ---------------------------------
+
+    def record(self, text: str, decision: str = "", files: str = "") -> None:
+        """Append what was ACTUALLY built. Not a plan, not an intention."""
+        self.adapter.log_append(self.log_id("asbuilt"), fmt_line(
+            "asbuilt", decision or "-", self.rid, repo=repo_name(), sha=head_sha(),
+            files=files.replace("`", "'")[:200],
+            note=text.replace("`", "'")[:400]))
+
+    def set_baseline(self) -> dict[str, int]:
+        """Stamp today's highest id per register as the line before which nothing is
+        expected to carry an as-built record. Idempotent-ish: re-stamping moves the
+        line forward, which is why it prints what it did."""
+        out = {}
+        oid = self.log_id("asbuilt")
+        for reg, spec in (self.cfg.get("idRegisters") or {}).items():
+            path = self.root / spec["file"]
+            if not path.exists():
+                continue
+            nums = [int(i.rsplit("-", 1)[1])
+                    for i in re.findall(rf"\b{reg}-\d+\b", path.read_text())]
+            top = max(nums) if nums else 0
+            self.adapter.log_append(oid, fmt_line(
+                "baseline", reg, self.rid, value=f"{top:04d}", repo=repo_name()))
+            out[reg] = top
+        return out
+
+    def reconcile(self) -> list[dict[str, str]]:
+        """Compare intent (git) against the as-built record (cloud).
+
+        Only mechanical divergence is decided here. Whether a built thing actually
+        matches what the document describes is a reading, not a diff — this reports
+        where to look and refuses to pretend it judged the substance.
+        """
+        findings: list[dict[str, str]] = []
+        notes_backlog: list[str] = []
+        events, _ = self.events("asbuilt")
+
+        # 1. Recorded as built, but the commit is not in this history: recorded from a
+        #    branch that never landed, or from a different repository.
+        for ev in events:
+            sha = ev.get("sha", "")
+            repo = ev.get("repo", "")
+            if not sha or sha == "unknown" or repo != repo_name():
+                continue
+            # `git cat-file -e` prints nothing on success, so the exit code is the
+            # only signal — a stdout-returning helper cannot answer this.
+            if subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+                              capture_output=True).returncode != 0:
+                findings.append({
+                    "kind": "as-built commit missing from git",
+                    "detail": f"{sha} recorded by {ev['run']}: {ev.get('note', '')[:90]}",
+                    "means": "recorded as built, but that commit is not in this history"})
+
+        # 2. Intent with no as-built record — as a RATCHET, not a flood.
+        #    A project adopting this on day one has every prior decision unrecorded, and
+        #    a check that reports all of them reports nothing: it is noise, and noise is
+        #    what gets a gate switched off. Ids at or below the baseline are counted as a
+        #    backlog that may only shrink; ids after it fail.
+        recorded_ids = {ev["key"] for ev in events if ev["key"] != "-"}
+        baselines = {ev["key"]: int(ev.get("value") or 0)
+                     for ev in events if ev["op"] == "baseline"}
+        for reg, spec in (self.cfg.get("idRegisters") or {}).items():
+            path = self.root / spec["file"]
+            if not path.exists():
+                continue
+            ids = set(re.findall(rf"\b{reg}-\d+\b", path.read_text()))
+            base = baselines.get(reg)
+            if base is None:
+                findings.append({
+                    "kind": f"{reg} has no as-built baseline",
+                    "detail": f"{len(ids)} ids exist and none is evaluated",
+                    "means": "run `reconcile --set-baseline` once, then only new ids are checked"})
+                continue
+            missing_new, backlog = [], 0
+            for i in sorted(ids - recorded_ids):
+                num = int(i.rsplit("-", 1)[1])
+                if num > base:
+                    missing_new.append(i)
+                else:
+                    backlog += 1
+            if missing_new:
+                findings.append({
+                    "kind": f"{reg} written after the baseline with no as-built record",
+                    "detail": ", ".join(missing_new[:8]) +
+                              (f" (+{len(missing_new)-8} more)" if len(missing_new) > 8 else ""),
+                    "means": "decided since adoption; nothing reports it was built"})
+            if backlog:
+                notes_backlog.append(f"{reg}: {backlog} pre-baseline ids unevaluated (backlog)")
+
+        # 3. As-built citing an id that does not exist in git: built against something
+        #    that was never recorded as a decision.
+        known: set[str] = set()
+        for reg, spec in (self.cfg.get("idRegisters") or {}).items():
+            path = self.root / spec["file"]
+            if path.exists():
+                known |= set(re.findall(rf"\b{reg}-\d+\b", path.read_text()))
+        orphan = sorted({ev["key"] for ev in events
+                         if ev["key"] != "-" and re.match(r"^[A-Z]+-\d+$", ev["key"])
+                         and ev["key"] not in known})
+        if orphan:
+            findings.append({
+                "kind": "as-built cites an unknown id",
+                "detail": ", ".join(orphan[:8]),
+                "means": "built against a decision that is not in the git register"})
+
+        self.backlog = notes_backlog
+        return findings
 
     # -- guard -------------------------------------------------------------
 
@@ -686,16 +810,20 @@ class Sync:
 
     # -- board -------------------------------------------------------------
 
-    def all_holders(self) -> dict[str, str]:
-        """Every key currently held, by whom — from whichever store this backend uses."""
+    def all_holdings(self) -> dict[str, dict[str, Any]]:
+        """Every key currently held, with who holds it and in which repository.
+
+        The repository matters: work spans several repos that are entered from one
+        umbrella, so "r-alpha holds ASC-072" is only actionable once you know which
+        checkout r-alpha is in."""
+        now = time.time()
         if self.adapter.is_lease_authority:
             events, _ = self.events("claims")
-            now = time.time()
-            out = {}
+            out: dict[str, dict[str, Any]] = {}
             for key in sorted({e["key"] for e in events}):
-                holder = resolve_holder(events, key, now)
-                if holder:
-                    out[key] = holder
+                holding = resolve_holding(events, key, now)
+                if holding:
+                    out[key] = holding
             return out
         out = {}
         d = self.root / STATE_DIR / "leases"
@@ -704,14 +832,19 @@ class Sync:
                 held = json.loads(p.read_text())
             except (json.JSONDecodeError, OSError):
                 continue
-            if time.time() <= parse_iso(held.get("ts", "")) + int(held.get("ttl", self.ttl)):
-                out[p.stem] = str(held.get("run"))
+            if now <= parse_iso(held.get("ts", "")) + int(held.get("ttl", self.ttl)):
+                out[p.stem] = {"run": str(held.get("run")), "repo": repo_name(),
+                               "ts": parse_iso(held.get("ts", ""))}
         return out
+
+    def all_holders(self) -> dict[str, str]:
+        return {k: str(v["run"]) for k, v in self.all_holdings().items()}
 
     def board(self) -> str:
         events, bad = self.events("claims")
         total = max(len(events) + bad, 1)
-        rows = [f"| `{k}` | {h} | held |" for k, h in self.all_holders().items()]
+        rows = [f"| `{k}` | {h['run']} | {h.get('repo') or '—'} | held |"
+                for k, h in self.all_holdings().items()]
         res_events, _ = self.events("reservations")
 
         lines = [
@@ -728,10 +861,10 @@ class Sync:
             "",
             "## Live leases",
             "",
-            "| Key | Holder | State |",
-            "|---|---|---|",
+            "| Key | Holder | Repo | State |",
+            "|---|---|---|---|",
         ]
-        lines += rows or ["| — | — | none held |"]
+        lines += rows or ["| — | — | — | none held |"]
 
         sig, _ = self.events("signals")
         if sig:
@@ -910,8 +1043,10 @@ def cmd_status(_args: argparse.Namespace) -> int:
 
     if act["others"]:
         print("\n  Other runs working this project right now:")
-        for key, holder in sorted(act["others"].items()):
-            print(f"    · {holder} holds {key}")
+        for key, h in sorted(act["others"].items()):
+            where = h.get("repo") or "unknown repo"
+            mine = " ← this repo" if where == repo_name() else ""
+            print(f"    · {h['run']} holds {key}  in {where}{mine}")
         print("    Do not take these on. If one looks abandoned, its lease expires on its own.")
     else:
         print("  other runs     : none holding anything")
@@ -1034,6 +1169,36 @@ def cmd_board(_args: argparse.Namespace) -> int:
     return 1 if result.startswith("REFUSED") else 0
 
 
+def cmd_record(args: argparse.Namespace) -> int:
+    Sync().record(" ".join(args.text), decision=args.decision or "", files=args.files or "")
+    print("recorded")
+    return 0
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Mechanical divergence only. The semantic read is the agent's job, and the
+    output says so rather than implying the check was complete."""
+    s = Sync()
+    if getattr(args, "set_baseline", False):
+        stamped = s.set_baseline()
+        for reg, top in stamped.items():
+            print(f"baseline {reg} = {reg}-{top:04d} — ids after this must carry an as-built record")
+        return 0
+    findings = s.reconcile()
+    print("Intent (git) vs as-built (coordination plane)\n")
+    if not findings:
+        print("  no mechanical divergence found")
+    for f in findings:
+        print(f"  ! {f['kind']}\n      {f['detail']}\n      → {f['means']}")
+    for n in getattr(s, "backlog", []):
+        print(f"  · {n}")
+    print("\nThis compares ids, commits and presence. It does NOT judge whether the")
+    print("built thing matches what the document describes — read both and decide.")
+    print("Before starting: resolve divergence or record why it stands.")
+    print("After finishing: update BOTH sides, then run this again.")
+    return 1 if findings else 0
+
+
 def cmd_whoami(_args: argparse.Namespace) -> int:
     s = Sync()
     print(f"run {s.rid} · backend {s.adapter.name} · "
@@ -1075,6 +1240,17 @@ def build_parser() -> argparse.ArgumentParser:
     ri.add_argument("register")
     ri.add_argument("value")
     ri.set_defaults(fn=cmd_release_id)
+
+    rec = sub.add_parser("record", help="append what was ACTUALLY built")
+    rec.add_argument("text", nargs="+")
+    rec.add_argument("--decision", help="the id it implements, e.g. DEC-0216")
+    rec.add_argument("--files", help="comma-separated paths actually changed")
+    rec.set_defaults(fn=cmd_record)
+
+    rc = sub.add_parser("reconcile", help="intent (git) vs as-built (cloud)")
+    rc.add_argument("--set-baseline", action="store_true",
+                    help="stamp today's ids as the pre-adoption backlog, once")
+    rc.set_defaults(fn=cmd_reconcile)
 
     j = sub.add_parser("journal")
     j.add_argument("text", nargs="+")

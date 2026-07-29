@@ -304,7 +304,9 @@ def check_scripts_run() -> None:
         r = subprocess.run(["bash", "-n", str(sh)], capture_output=True, text=True)
         if r.returncode != 0:
             err(f"{rel(sh)}: bash syntax error: {r.stderr.strip()}")
-        if not os.access(sh, os.X_OK):
+        # A leading underscore marks a sourced library, not a hook entry point.
+        # Requiring +x on it would be cargo-culting the rule past its reason.
+        if not sh.name.startswith("_") and not os.access(sh, os.X_OK):
             err(f"{rel(sh)}: not executable")
     node = shutil.which("node")
     if node:

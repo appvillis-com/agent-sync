@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.3.0 — 2026-07-29
+
+### Fixed
+- **Three of the four hooks were dead on macOS.** They called `timeout`, which is GNU
+  coreutils and absent from a stock macOS, so `session-start`, `renew` and `session-end`
+  all died with "command not found" — leases were never renewed and never released
+  there, the exact abandoned-lease failure this tool exists to prevent. A portable
+  `run_limited` helper now uses `timeout`, then `gtimeout`, then a plain-bash watchdog.
+  `guard` was unaffected, so enforcement itself never lapsed.
+
+### Added
+- **The as-built record, and the duty to reconcile it against git.** Git documents say
+  how it *should* be — written before the code, often without it. `70 As-built` says how
+  it *actually is*, derived from what agents really wrote. Two source-of-truths answering
+  two different questions; the gap between them is the finding, not a defect. New
+  `record` and `reconcile` commands, wired into the pipeline's docs-study stage (resolve
+  divergence before writing code) and docs stage (update both sides, then re-check).
+- **`reconcile` is a ratchet, not a flood.** `--set-baseline` stamps today's ids as a
+  counted backlog that may only shrink; ids written after it must carry an as-built
+  record. A check that fails on all of history is a check that gets switched off.
+- **Awareness names the repository.** Work spans several repos entered from one umbrella,
+  and "r-alpha holds ASC-072" is only actionable once you know which checkout it is in.
+- **`npx agent-sync update`** — updates every channel and prunes the shadow copy in the
+  same step, because `npx skills update --global` recreates it on its own even when
+  claude-code was never targeted.
+- **`install.sh`** POSIX fallback and a **Cursor rule** (`cursor/rules/agent-sync.mdc`,
+  no relative links, since the file gets copied into foreign projects).
+
 ## 0.2.0 — 2026-07-29
 
 Coordination is not only mutual exclusion. An audit against the stated purpose — *agents

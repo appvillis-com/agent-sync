@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
   author: appvillis-com
 ---
 
@@ -125,6 +125,8 @@ npx sshlg-skills install
 | `reserve <REG>` | Reserve the next id in a register (`DEC`, `OQ`, `DEP`, …). Prints the id |
 | `release-id <REG> <ID>` | Return an id you did not end up writing to git |
 | `journal <text>` | Append one line to this run's journal |
+| `record <text>` | Append what you **actually built** — `--decision DEC-…`, `--files a,b` |
+| `reconcile` | Intent (git) vs as-built (cloud). `--set-baseline` once per project |
 | `signal <DEP-ID> <state>` | Move a cross-repo dependency: `filed`/`accepted`/`delivered`/`closed`/`refused` |
 | `guard <path>` | Answer whether this run may write that path. Exit 0 = yes, 2 = no |
 | `board` | Regenerate the read-only board and the mirror from git |
@@ -184,6 +186,31 @@ answer without trusting anyone's arithmetic. If you reserve an id and do not wri
 it to git, `release-id` it — otherwise the number is a hole that the board reports
 as a leak, and nobody can tell a hole from work in a branch.
 
+## Two documentation sources, and the duty to reconcile them
+
+Git docs answer **how it should be** — written before the code, often without it.
+The as-built record answers **how it actually is** — derived from what agents really
+wrote. Neither is a copy of the other, and neither outranks the other, because they
+answer different questions. **The gap between them is the finding**, not a defect.
+
+The duty runs at both ends of every task:
+
+- **Before starting** (docs-study stage) — `reconcile`, then read both sides for the
+  area you are about to touch. Resolve each divergence: the git doc is stale, or the
+  as-built record is wrong, or they genuinely disagree and that is a decision to make.
+  Building on an unresolved divergence means writing code against a system that does
+  not exist.
+- **After finishing** (docs stage) — `record` what you actually built, update the git
+  documents that state intent, then `reconcile` again. A task that updated one side
+  has left the next agent a divergence to find the hard way.
+
+`reconcile` is mechanical and says so: it compares ids, commits and presence, and
+refuses to judge whether the built thing matches what the document describes. That is
+a reading, and it is yours.
+
+**Read `references/two-sources.md` before the first reconcile in a project**, and
+whenever deciding which side a piece of documentation belongs on.
+
 ## Binding to task-pipeline
 
 This skill supplies stages; it does not define them. Stage names are
@@ -192,12 +219,13 @@ This skill supplies stages; it does not define them. Stage names are
 | Stage | What to do here |
 |---|---|
 | 0 Intake grill | Add the cloud KB and the board to the harvest's source ledger; `acquire` **before** the brief is committed |
+| 1 Docs study | `reconcile` — study git docs **and** the as-built record, resolve every divergence before writing code |
 | 2 Brainstorm | `journal`; warn if a live run holds an overlapping key |
 | 3 Spec | `reserve` every id before writing it to git |
 | 4 Plan | Register file ownership for the plan's parallel groups |
 | 5 Dev | Lease renews itself; own the submodule-commit → parent-gitlink bump |
 | 6 Tests · 7 Lint · 8 Post-deploy | `journal` each gate result |
-| 9 Docs + wiki | The main write point — `signal` the dependency flips, then `board` |
+| 9 Docs + wiki | The main write point — `record` what was built, update the git docs, `signal` the dependency flips, `reconcile` again, then `board` |
 | 10 Acceptance | `release` every lease, write the durable claim tag through to done |
 
 **Read `references/pipeline-binding.md` when wiring `pipeline.json`** — it holds the
@@ -278,6 +306,7 @@ Each file is loaded on its own trigger, not by default.
 | `references/backend-fs.md` | running without a cloud backend, or explaining degraded mode |
 | `references/pipeline-binding.md` | wiring `pipeline.json`, or adding a stage hook |
 | `references/hooks.md` | installing, debugging or removing the Claude Code hooks |
+| `references/two-sources.md` | before the first reconcile, or when deciding where a document belongs |
 
 If this copy arrived without `references/`, fetch them from
 `https://raw.githubusercontent.com/appvillis-com/agent-sync/main/plugins/agent-sync/skills/agent-sync/references/<file>`.

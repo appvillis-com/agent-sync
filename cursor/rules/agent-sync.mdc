@@ -1,0 +1,51 @@
+---
+description: Coordinate with other agents before editing shared registry files — take a lease, check who else is working, reconcile intent against what was actually built.
+alwaysApply: true
+---
+
+# agent-sync — you are probably not alone in this repository
+
+This project may run several coding agents at once. If it contains
+`.claude/agent-sync.json`, the rules below are not optional.
+
+There are no enforcement hooks outside Claude Code. Nothing will stop you from
+overwriting another agent's work — you have to run the checks yourself, and the run
+is recorded `ungated` so nobody mistakes your session for a protected one.
+
+Let SKILL be the installed skill directory (`~/.agents/skills/agent-sync`).
+
+## Before you touch anything
+
+    python3 "$SKILL/scripts/agent_sync.py" status
+
+Read the two awareness blocks it prints: which other runs hold which tasks and in
+which repository, and what changed since you last looked. Do not take on a task
+another run holds.
+
+## Before editing a shared register
+
+Decision logs, roadmaps, boards, dependency tables and open-question registers are
+written by everyone. Take a lease first, and check:
+
+    python3 "$SKILL/scripts/agent_sync.py" acquire <TASK-ID>
+    python3 "$SKILL/scripts/agent_sync.py" guard docs/DECISIONS.md
+
+Exit 2 means another run holds it. Do not edit anyway. Release on every path,
+including failure — an abandoned lease looks like active work until it expires.
+
+## Ids are reserved, not read
+
+Reading a "next free id" line is not reserving it; two agents read the same number.
+
+    python3 "$SKILL/scripts/agent_sync.py" reserve DEC
+
+## Two documentation sources
+
+Git documents say how it *should* be. The as-built record says how it *actually* is.
+Before starting a task, run `reconcile` and resolve every divergence. After finishing,
+`record` what you built, update the git documents, and `reconcile` again.
+
+    python3 "$SKILL/scripts/agent_sync.py" reconcile
+    python3 "$SKILL/scripts/agent_sync.py" record "what you built" --decision DEC-0001
+
+Full documentation: https://github.com/appvillis-com/agent-sync

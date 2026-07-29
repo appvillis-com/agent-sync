@@ -3,7 +3,8 @@
 # the script itself throttles on a timestamp file and touches the network at
 # most once per renewIntervalSeconds.
 set -uo pipefail
-S="${CLAUDE_PLUGIN_ROOT}/skills/agent-sync/scripts/agent_sync.py"
-[ -f "${CLAUDE_PROJECT_DIR:-$PWD}/.claude/agent-sync.json" ] || exit 0
-timeout 10 python3 "$S" renew >/dev/null 2>&1 || true
+. "${CLAUDE_PLUGIN_ROOT}/hooks/_lib.sh"
+S="$AGENT_SYNC_PY"
+agent_sync_configured || exit 0
+run_limited 10 python3 "$S" renew >/dev/null 2>&1 || true
 exit 0

@@ -361,7 +361,7 @@ npm test                             # both of the above
 ```
 
 What ships: one skill (`agent-sync`), `scripts/agent_sync.py` (stdlib only), four hook
-scripts, the slash command, `agent-sync.schema.json`, and six reference contracts the
+scripts, the slash command, `agent-sync.schema.json`, and seven reference contracts the
 agent loads on their own trigger rather than by default:
 
 | Reference | Read it when |
@@ -372,6 +372,7 @@ agent loads on their own trigger rather than by default:
 | [`backend-fs.md`](plugins/agent-sync/skills/agent-sync/references/backend-fs.md) | running without a cloud backend, or explaining degraded mode |
 | [`pipeline-binding.md`](plugins/agent-sync/skills/agent-sync/references/pipeline-binding.md) | wiring `pipeline.json`, or adding a stage hook |
 | [`hooks.md`](plugins/agent-sync/skills/agent-sync/references/hooks.md) | installing, debugging or removing the Claude Code hooks |
+| [`two-sources.md`](plugins/agent-sync/skills/agent-sync/references/two-sources.md) | before the first reconcile, or when deciding where a document belongs |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Security
 reports: [SECURITY.md](SECURITY.md).
