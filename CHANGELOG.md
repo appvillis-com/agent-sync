@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.4 — 2026-07-29
+
+### Fixed
+- **`release` reported success for a lease it did not release, and cleared the
+  board claim on the way.** The lease plane refused correctly — a lease held by
+  another run stayed held, and `_git_release` printed a note saying so — but the
+  command printed `released <key>` over the top of it and exited 0, and
+  `write_claim` had already blanked the claim cell before the refusal was
+  reached. The result was the board advertising a task as free while the lease
+  still held it: the exact disagreement a lease exists to prevent, manufactured
+  by the tool. Ownership is now checked **first**, in whichever plane arbitrates
+  it; nothing is written when the answer is no; the command exits non-zero and
+  says who holds it. Both lease modes were affected.
+- A regression check covers it in `local` and `git` mode, and was probed against
+  the old code in both before being trusted.
+
 ## 1.3.3 — 2026-07-29
 
 ### Fixed

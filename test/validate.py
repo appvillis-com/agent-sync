@@ -480,6 +480,57 @@ def check_lease_held_is_visible() -> None:
                 err(f"lease visibility [{mode}]: `whoami` still holds VIS-1 after release")
 
 
+def check_release_refuses_other_runs() -> None:
+    """`release` must refuse a lease another run holds — and say so with a non-zero exit.
+
+    It used to blank the board's claim cell, print "released" and exit 0 while the lease plane
+    correctly refused underneath. The board then advertised the task as free while the lease still
+    held it, which is the collision the lease exists to prevent, produced by the tool itself. The
+    check runs both modes because the refusal lives in a different place in each.
+    """
+    if not shutil.which("git"):
+        notes.append("git not found — release-refusal check skipped")
+        return
+    script = ROOT / "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py"
+
+    for mode in ("local", "git"):
+        with tempfile.TemporaryDirectory() as project:
+            def run(*a, run_id="owner"):
+                return subprocess.run(
+                    [sys.executable, str(script), *a], cwd=project,
+                    env={**os.environ, "AGENT_SYNC_RUN_ID": run_id},
+                    capture_output=True, text=True, timeout=60)
+            for argv in (["git", "init", "-q"],
+                         ["git", "-c", "user.email=v@e", "-c", "user.name=v",
+                          "commit", "-q", "--allow-empty", "-m", "init"]):
+                subprocess.run(argv, cwd=project, capture_output=True)
+            if mode == "git":
+                remote = Path(project) / ".remote.git"
+                subprocess.run(["git", "init", "-q", "--bare", str(remote)], capture_output=True)
+                subprocess.run(["git", "remote", "add", "origin", str(remote)],
+                               cwd=project, capture_output=True)
+            if run("init", "--backend", "fs").returncode != 0:
+                err(f"release refusal [{mode}]: init failed")
+                continue
+            cfg_path = Path(project) / ".claude" / "agent-sync.json"
+            cfg = json.loads(cfg_path.read_text())
+            cfg["leaseBackend"] = mode
+            cfg_path.write_text(json.dumps(cfg, indent=2))
+
+            if "won" not in run("acquire", "REL-1").stdout:
+                err(f"release refusal [{mode}]: the owner could not acquire REL-1")
+                continue
+
+            stolen = run("release", "REL-1", run_id="intruder")
+            if stolen.returncode == 0:
+                err(f"release refusal [{mode}]: a run that does not hold REL-1 released it and "
+                    "reported success — the board and the lease now disagree")
+            if "REL-1" not in run("whoami").stdout:
+                err(f"release refusal [{mode}]: the owner lost REL-1 to a run that did not hold it")
+            if run("release", "REL-1").returncode != 0:
+                err(f"release refusal [{mode}]: the owner could not release its own lease")
+
+
 def check_hooks_noop_without_config() -> None:
     """Installed globally, every hook must do nothing in an unconfigured project.
 
@@ -538,6 +589,7 @@ def main() -> int:
     check_hooks_noop_without_config()
     check_lease_report_agrees()
     check_lease_held_is_visible()
+    check_release_refuses_other_runs()
 
     for n in notes:
         print(f"note: {n}")

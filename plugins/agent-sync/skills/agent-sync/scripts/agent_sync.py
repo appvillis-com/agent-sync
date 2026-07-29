@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -960,7 +960,36 @@ class Sync:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(now_iso())
 
-    def release(self, key: str) -> None:
+    def _lease_holder(self, key: str) -> str | None:
+        """Who holds this lease right now, in whichever plane arbitrates it."""
+        if self.lease_mode == "git":
+            sha, held = self._git_read_lease(key)
+            return held.get("run") if sha else None
+        lock = self._local_lock(key)
+        if not lock.exists():
+            return None
+        try:
+            return json.loads(lock.read_text()).get("run")
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def release(self, key: str) -> bool:
+        """Release only what this run holds, and say so plainly when it does not.
+
+        This used to clear the board claim and report success unconditionally. The lease
+        plane refused correctly — `_git_release` prints a note and returns — but the
+        caller printed "released" over the top of it and exited 0, and `write_claim` had
+        already blanked the claim cell on the way in. The board then said the task was
+        free while the lease said it was taken: the exact disagreement a lease exists to
+        prevent, manufactured by the tool. Ownership is therefore checked FIRST, and
+        nothing is written when the answer is no.
+        """
+        holder = self._lease_holder(key)
+        if holder is not None and holder != self.rid:
+            print(f"note: {key} is held by {holder}, not this run — nothing released",
+                  file=sys.stderr)
+            return False
+
         for n in self.write_claim(key, None):
             print(f"  {n}")
         if self.lease_mode == "git":
@@ -978,6 +1007,7 @@ class Sync:
                                         fmt_line("release", key, self.rid))
             except Fail as exc:
                 print(f"note: released locally, not published ({exc})", file=sys.stderr)
+        return True
 
     def held(self) -> list[str]:
         d = self.root / STATE_DIR / "leases"
@@ -2008,7 +2038,11 @@ def cmd_renew(args: argparse.Namespace) -> int:
 
 
 def cmd_release(args: argparse.Namespace) -> int:
-    Sync().release(args.key)
+    # Exit non-zero when nothing was released. A caller that scripts `release` in a
+    # cleanup path has no other way to learn the lease is still out there.
+    if not Sync().release(args.key):
+        print(f"NOT released: {args.key} is held by another run", file=sys.stderr)
+        return 1
     print(f"released {args.key}")
     return 0
 
