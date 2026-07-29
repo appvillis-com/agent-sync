@@ -4,17 +4,32 @@
   "title": "agent-sync project configuration",
   "description": "Shape only. Identity (instance URL, token, container id) lives in .env.agent-sync and is never committed.",
   "type": "object",
-  "required": ["backend"],
+  "required": [
+    "backend"
+  ],
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "backend": {
       "type": "string",
-      "enum": ["outline", "fs"],
+      "enum": [
+        "outline",
+        "fs"
+      ],
       "description": "Which adapter holds coordination state. 'fs' is degraded: not the lease authority across machines."
     },
-    "leaseTtlSeconds": { "type": "integer", "minimum": 60, "default": 2700 },
-    "renewIntervalSeconds": { "type": "integer", "minimum": 30, "default": 300 },
+    "leaseTtlSeconds": {
+      "type": "integer",
+      "minimum": 60,
+      "default": 2700
+    },
+    "renewIntervalSeconds": {
+      "type": "integer",
+      "minimum": 30,
+      "default": 300
+    },
     "gated": {
       "type": "boolean",
       "default": true,
@@ -25,10 +40,16 @@
       "description": "Registers whose next free id must be reserved before it is written to git.",
       "additionalProperties": {
         "type": "object",
-        "required": ["file", "nextFreeIdPattern"],
+        "required": [
+          "file",
+          "nextFreeIdPattern"
+        ],
         "additionalProperties": false,
         "properties": {
-          "file": { "type": "string", "description": "Repo-relative path to the register file." },
+          "file": {
+            "type": "string",
+            "description": "Repo-relative path to the register file."
+          },
           "nextFreeIdPattern": {
             "type": "string",
             "description": "Regex with one capture group holding the next free number."
@@ -38,7 +59,9 @@
     },
     "guardedFiles": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Glob patterns that require a live lease before being written. A submodule lists only its own registers; cross-repository files belong to the parent repository."
     },
     "claimTags": {
@@ -46,25 +69,38 @@
       "description": "How a durable claim is written through to git for each file. {holder} is substituted.",
       "additionalProperties": {
         "type": "object",
-        "additionalProperties": { "type": "string" }
+        "additionalProperties": {
+          "type": "string"
+        }
       }
     },
     "gates": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Shell commands run at the pipeline's lint stage; each result is journaled."
     },
     "mirror": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean", "default": false },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
         "sources": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Files or directories rendered one-way into the knowledge store, stamped with the source commit."
         }
       }
+    },
+    "setupFile": {
+      "type": "string",
+      "description": "Where the generated setup snapshot is written. Defaults to docs/AGENT_SYNC.md when docs/ exists, else AGENT_SYNC.md."
     }
   }
 }

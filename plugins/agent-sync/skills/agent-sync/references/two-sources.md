@@ -95,3 +95,37 @@ reason: a gate that fails on history is a gate nobody keeps.
 | who is doing what right now | the claims log — ephemeral, never git |
 
 When in doubt: if it must survive the tool being uninstalled, it goes in git.
+
+## Lifetime, and why nothing is deleted
+
+| Information | Home | Lifetime |
+|---|---|---|
+| Decisions, specs, contracts, user-facing behaviour | git | permanent, append-only register |
+| What was actually built, with its commit | as-built log | permanent, append-only |
+| Cross-repo dependency state | signal log | permanent, append-only |
+| Who holds a task right now | claims log | expires by TTL |
+| Per-run narrative | that run's journal | permanent |
+| The board, the repo page, the setup snapshot | generated | replaced on every regeneration |
+
+**No log entry is ever edited or deleted.** The logs are replayed in order to decide who
+holds what and which id was allocated, so removing a line silently rewrites a conclusion
+every other agent has already acted on. Correct by **appending**:
+
+- a lease is **released**, never removed;
+- a reserved id you did not use is returned with `release-id`, which appends;
+- a wrong as-built entry is superseded by a later, correct one, and both stay visible —
+  the history of what was believed is itself worth keeping.
+
+Generated pages are the exception, and a narrow one: they are rewritten wholesale, and a
+page whose first line has lost its `agent-sync:generated` marker is **refused** rather
+than overwritten, because a human took it over.
+
+**Growth.** These logs are small — one line per event — so rotation is not urgent. When a
+log does need trimming, archive the whole document and start a fresh one with a `base`
+line carrying the current allocation state. Never delete lines from a live log to shrink
+it: replay would then produce a different answer than it did yesterday.
+
+**Removing the tool.** Everything durable is already in git. Delete `.agent-sync/`, the
+config and the env file; the knowledge-base pages can be kept as a record or archived.
+Nothing in the repository depends on the tool being installed, which is the property that
+makes adopting it reversible.

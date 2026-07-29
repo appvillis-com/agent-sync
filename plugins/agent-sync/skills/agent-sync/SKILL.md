@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "0.3.3"
+  version: "0.4.0"
   author: appvillis-com
 ---
 
@@ -131,6 +131,7 @@ npx sshlg-skills install
 | `guard <path>` | Answer whether this run may write that path. Exit 0 = yes, 2 = no |
 | `board` | Regenerate the read-only board and the mirror from git |
 | `whoami` | Print this run's id and its held leases |
+| `setup` | Write the generated snapshot of how **this** project is wired, for agents to read |
 
 `$SKILL_DIR` is this skill's own directory. Every command reads
 `.claude/agent-sync.json` from the project root and needs no arguments beyond those
@@ -186,6 +187,19 @@ answer without trusting anyone's arithmetic. If you reserve an id and do not wri
 it to git, `release-id` it — otherwise the number is a hole that the board reports
 as a leak, and nobody can tell a hole from work in a branch.
 
+## Nothing in a log is ever edited or deleted
+
+The logs are **replayed in order**, so an edit silently rewrites a decision every other
+agent has already acted on. Correction is by **appending** the correcting entry:
+
+- a lease is **released**, never removed;
+- a reserved id you did not use is returned with `release-id`, which appends;
+- a wrong as-built entry is superseded by a later, correct one — both stay visible,
+  and that history is the point.
+
+Generated pages are the only exception: they are rewritten wholesale, and a page whose
+first line lost its `agent-sync:generated` marker is **refused**, not overwritten.
+
 ## Two documentation sources, and the duty to reconcile them
 
 Git docs answer **how it should be** — written before the code, often without it.
@@ -207,6 +221,11 @@ The duty runs at both ends of every task:
 `reconcile` is mechanical and says so: it compares ids, commits and presence, and
 refuses to judge whether the built thing matches what the document describes. That is
 a reading, and it is yours.
+
+Every project also carries a **generated snapshot** of its own wiring — registers,
+guarded files, gates, what is written where and what is never deleted. Write it with
+`setup`, commit it, and link it from the project's agent instructions, so every agent
+reads the same description of the pipeline instead of inferring it from behaviour.
 
 **Read `references/two-sources.md` before the first reconcile in a project**, and
 whenever deciding which side a piece of documentation belongs on.

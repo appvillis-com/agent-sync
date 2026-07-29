@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -109,6 +109,37 @@ class Fail(Exception):
 
 # --------------------------------------------------------------------------- config
 
+def find_env_file(root: Path) -> Path | None:
+    """Locate .env.agent-sync for this checkout, including from inside a submodule.
+
+    Submodules are separate git repositories, so `project_root()` in one of them is the
+    submodule — and the credentials sit in the SUPERPROJECT. Looking only in the local
+    root put every submodule agent into degraded `fs` mode, isolated in local files and
+    unable to see anyone: three agents entered from one umbrella, coordinating with
+    nobody, and each one saying `ungated` while believing it was configured.
+
+    One credential file therefore serves the whole tree: local root first, then the
+    superproject git reports, then plain parent directories.
+    """
+    local = root / ENV_FILE
+    if local.exists():
+        return local
+
+    superproject = git("rev-parse", "--show-superproject-working-tree", cwd=root)
+    if superproject:
+        candidate = Path(superproject) / ENV_FILE
+        if candidate.exists():
+            return candidate
+
+    for parent in root.resolve().parents:
+        candidate = parent / ENV_FILE
+        if candidate.exists():
+            return candidate
+        if (parent / ".git").exists() and (parent / CONFIG_PATH).exists():
+            break   # a configured project that simply has no env file — stop here
+    return None
+
+
 def load_env_file(root: Path) -> None:
     """Read .env.agent-sync into the environment when it is not already there.
 
@@ -123,8 +154,8 @@ def load_env_file(root: Path) -> None:
     how it was invoked. An already-set variable always wins: explicit beats implicit,
     and an operator overriding a value for one command must not be undone here.
     """
-    path = root / ENV_FILE
-    if not path.exists():
+    path = find_env_file(root)
+    if path is None:
         return
     try:
         text = path.read_text()
@@ -829,17 +860,31 @@ class Sync:
 
         # 3. As-built citing an id that does not exist in git: built against something
         #    that was never recorded as a decision.
-        known: set[str] = set()
-        for reg, spec in (self.cfg.get("idRegisters") or {}).items():
-            known |= self._allocated_ids(reg, spec)
-        orphan = sorted({ev["key"] for ev in events
-                         if ev["key"] != "-" and re.match(r"^[A-Z]+-\d+$", ev["key"])
-                         and ev["key"] not in known})
-        if orphan:
-            findings.append({
-                "kind": "as-built cites an unknown id",
-                "detail": ", ".join(orphan[:8]),
-                "means": "built against a decision that is not in the git register"})
+        # Only judge what this checkout can actually judge. The as-built log is shared by
+        # every repository on the plane, while id registers are per-repository — a service
+        # repo declares none, because decisions live in the umbrella. Comparing the shared
+        # log against a local register reported every umbrella decision as an orphan when
+        # run from a submodule: a false finding produced by scope, and the loudest possible
+        # way to teach people to ignore the check.
+        registers = self.cfg.get("idRegisters") or {}
+        if registers:
+            known: set[str] = set()
+            for reg, spec in registers.items():
+                known |= self._allocated_ids(reg, spec)
+            prefixes = tuple(f"{reg}-" for reg in registers)
+            orphan = sorted({ev["key"] for ev in events
+                             if ev.get("repo") == repo_name()
+                             and ev["key"].startswith(prefixes)
+                             and ev["key"] not in known})
+            if orphan:
+                findings.append({
+                    "kind": "as-built cites an unknown id",
+                    "detail": ", ".join(orphan[:8]),
+                    "means": "built against a decision that is not in the git register"})
+        else:
+            notes_backlog.append(
+                "no id registers declared here, so register checks are not evaluated in "
+                "this repository — run reconcile in the umbrella for those")
 
         self.backlog = notes_backlog
         return findings
@@ -919,17 +964,28 @@ class Sync:
         return {k: str(v["run"]) for k, v in self.all_holdings().items()}
 
     def board(self) -> str:
+        """The cross-repository view — identical whoever generates it.
+
+        Four repositories share one plane and every one of them may regenerate this
+        page, so its content must not depend on who did. It once did: the header named
+        the generating repo and the id-leak section read that repo's registers, so a
+        submodule agent's run replaced the umbrella's board with a narrower one. Repo-
+        local findings now live on their own page (`12 Repo — <name>`); only facts that
+        are true from every checkout belong here.
+        """
         events, bad = self.events("claims")
         total = max(len(events) + bad, 1)
         rows = [f"| `{k}` | {h['run']} | {h.get('repo') or '—'} | held |"
                 for k, h in self.all_holdings().items()]
-        res_events, _ = self.events("reservations")
 
         lines = [
             f"{GENERATED_MARKER} source={repo_name()}@{head_sha()} at={now_iso()} "
             "— edit in git, not here -->",
             "",
-            f"# Board — {repo_name()}",
+            "# Board — the coordination plane",
+            "",
+            "Every repository on this plane writes and reads this page. It carries only "
+            "facts that are true from any of them.",
             "",
             f"- backend: `{self.adapter.name}` · lease authority: "
             f"**{'yes' if self.adapter.is_lease_authority else 'no'}**",
@@ -951,11 +1007,144 @@ class Sync:
             for ev in sig[-10:]:
                 lines.append(f"| `{ev['key']}` | {ev.get('state','?')} | {ev['run']} "
                              f"| {ev.get('repo','—')} |")
+        return "\n".join(lines) + "\n"
 
+    def setup_snapshot(self) -> str:
+        """A snapshot of how THIS project is actually wired, generated from the config.
+
+        Written into the repository so every agent — and every human — reads the same
+        description of the documentation pipeline before touching it, instead of
+        inferring it from behaviour. Generated, never hand-written: a hand-written
+        description of a configuration drifts from it, which is the failure this whole
+        tool exists to surface.
+        """
+        cfg = self.cfg
+        regs = cfg.get("idRegisters") or {}
+        guarded = cfg.get("guardedFiles") or []
+        gates = cfg.get("gates") or []
+        mirror = cfg.get("mirror") or {}
+        env_path = find_env_file(self.root)
+        L = [
+            f"{GENERATED_MARKER} source={repo_name()}@{head_sha()} at={now_iso()} "
+            "— regenerate with `agent_sync.py setup`, do not hand-edit -->",
+            "",
+            f"# How documentation and coordination work in {repo_name()}",
+            "",
+            "This file is **generated** from the live configuration. If it disagrees with",
+            "what the tool does, the tool is right and this file is stale — regenerate it.",
+            "",
+            "## Two documentation sources",
+            "",
+            "| Source | Answers | Where |",
+            "|---|---|---|",
+            "| Git documents | *how it should be* — intent, decisions, contracts | this repository |",
+            "| As-built record | *how it actually is* — what agents wrote, with commits | the coordination plane |",
+            "",
+            "Neither outranks the other; they answer different questions. **The gap between",
+            "them is the finding.** Reconcile before starting a task and after finishing it.",
+            "",
+            "## This project's wiring",
+            "",
+            f"- backend: **{self.adapter.name}** · lease authority: "
+            f"**{'yes' if self.adapter.is_lease_authority else 'NO — degraded'}** · runs recorded "
+            f"**{'gated' if self.gated else 'ungated'}**",
+            f"- lease TTL {cfg.get('leaseTtlSeconds', DEFAULT_TTL)}s, renewed every "
+            f"{cfg.get('renewIntervalSeconds', DEFAULT_RENEW)}s",
+            f"- credentials read from `{env_path.name if env_path else '(none found)'}`"
+            f"{' in ' + str(env_path.parent.name) if env_path and env_path.parent != self.root else ''}"
+            " — gitignored, never committed",
+            "",
+            "### Id registers — reserve before you write",
+            "",
+        ]
+        if regs:
+            L += ["| Register | File | Reserve with |", "|---|---|---|"]
+            L += [f"| `{r}` | `{s['file']}` | `agent_sync.py reserve {r}` |" for r, s in sorted(regs.items())]
+            L += ["", "Reading a *next free id* line is **not** reserving it — two agents read the same number."]
+        else:
+            L += ["None declared here. Ids live in the parent repository; reserve them there."]
+
+        L += ["", "### Guarded files — a live lease is required to write these", ""]
+        L += ([f"- `{g}`" for g in guarded] or ["- none"])
+        L += ["", "### Gates run before a change is considered done", ""]
+        L += ([f"- `{g}`" for g in gates] or ["- none configured"])
+
+        L += ["", "### Mirrored into the plane (read-only rendering of git)", ""]
+        L += ([f"- `{s}`" for s in (mirror.get("sources") or [])]
+              if mirror.get("enabled") else ["- disabled"])
+
+        L += [
+            "",
+            "## What is written where, and what is never deleted",
+            "",
+            "| Information | Home | Lifetime |",
+            "|---|---|---|",
+            "| Decisions, specs, contracts, user-facing behaviour | git | permanent, append-only register |",
+            "| What was actually built, with its commit | as-built log | permanent, append-only |",
+            "| Cross-repo dependency state | signal log | permanent, append-only |",
+            "| Who holds a task right now | claims log | expires by TTL |",
+            "| Per-run narrative | that run's journal | permanent |",
+            "| The board and these pages | generated | replaced on every regeneration |",
+            "",
+            "**Nothing in a log is edited or deleted.** A mistake is corrected by appending",
+            "the correcting entry, because the logs are replayed in order and a deletion",
+            "would silently rewrite a decision every other agent already read. A lease is",
+            "released, never removed. A reserved id that is not used is returned with",
+            "`release-id`, which appends — it does not erase.",
+            "",
+            "Generated pages are the exception: they are rewritten wholesale, and a page",
+            "whose first line lost its generated marker is **refused**, not overwritten.",
+            "",
+            "## The cycle, per task",
+            "",
+            "```",
+            "status      → who else is working, and what changed while you were away",
+            "reconcile   → resolve every divergence BEFORE writing code",
+            "acquire ID  → take the lease; the claim tag in git is written through",
+            "   … work …",
+            "record      → what you ACTUALLY built, with the decision id and files",
+            "   … update the git documents in the same change …",
+            "reconcile   → check both sides again",
+            "board       → regenerate the shared view",
+            "release ID  → on every path, including failure",
+            "```",
+            "",
+            "Full doctrine ships with the skill: `references/two-sources.md`,",
+            "`references/lease-protocol.md`, `references/pipeline-binding.md`.",
+        ]
+        return "\n".join(L) + "\n"
+
+    def setup_path(self) -> Path:
+        configured = self.cfg.get("setupFile")
+        if configured:
+            return self.root / configured
+        return self.root / ("docs/AGENT_SYNC.md" if (self.root / "docs").is_dir()
+                            else "AGENT_SYNC.md")
+
+    def repo_page(self) -> str:
+        """Findings only this checkout can produce — registers it owns, its own history."""
+        res_events, _ = self.events("reservations")
+        lines = [
+            f"{GENERATED_MARKER} source={repo_name()}@{head_sha()} at={now_iso()} "
+            "— edit in git, not here -->",
+            "",
+            f"# {repo_name()}",
+            "",
+            f"- registers declared here: "
+            f"{', '.join(sorted(self.cfg.get('idRegisters') or {})) or 'none — they live in the parent repository'}",
+            f"- guarded files: {len(self.cfg.get('guardedFiles') or [])}",
+        ]
         leaks = self._leaks(res_events)
-        if leaks:
-            lines += ["", "## Reserved ids not found in git", ""]
-            lines += [f"- `{r}-{v:04d}` reserved by {run}" for r, v, run in leaks]
+        lines += ["", "## Reserved ids not found in git", ""]
+        lines += ([f"- `{r}-{v:04d}` reserved by {run}" for r, v, run in leaks]
+                  or ["- none"])
+
+        findings = self.reconcile()
+        lines += ["", "## Intent vs as-built", ""]
+        lines += ([f"- **{f['kind']}** — {f['detail']}" for f in findings] or
+                  ["- no mechanical divergence found"])
+        for n in getattr(self, "backlog", []):
+            lines.append(f"- {n}")
         return "\n".join(lines) + "\n"
 
     def _leaks(self, events: list[dict[str, str]]) -> list[tuple[str, int, str]]:
@@ -1243,10 +1432,12 @@ def cmd_guard(args: argparse.Namespace) -> int:
 
 def cmd_board(_args: argparse.Namespace) -> int:
     s = Sync()
-    result = s.put_generated("10 Board", s.board())
-    print(result)
+    results = [s.put_generated("10 Board", s.board()),
+               s.put_generated(f"12 Repo — {repo_name()}", s.repo_page())]
+    for r in results:
+        print(r)
     # A refusal must be visible to a gate, not just to a reader.
-    return 1 if result.startswith("REFUSED") else 0
+    return 1 if any(r.startswith("REFUSED") for r in results) else 0
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -1279,6 +1470,23 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return 1 if findings else 0
 
 
+def cmd_setup(_args: argparse.Namespace) -> int:
+    s = Sync()
+    path = s.setup_path()
+    if path.exists():
+        current = path.read_text()
+        if current.strip() and not current.lstrip().startswith(GENERATED_MARKER):
+            print(f"REFUSED: {path} exists and was not generated by agent-sync — "
+                  "reporting instead of overwriting", file=sys.stderr)
+            return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(s.setup_snapshot())
+    print(f"wrote {path.relative_to(s.root)}")
+    print("Commit it, and link it from the project's agent instructions so every agent "
+          "reads the same description of the pipeline before touching it.")
+    return 0
+
+
 def cmd_whoami(_args: argparse.Namespace) -> int:
     s = Sync()
     print(f"run {s.rid} · backend {s.adapter.name} · "
@@ -1301,6 +1509,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="inspect, repair, report, one next action").set_defaults(fn=cmd_status)
     sub.add_parser("bootstrap", help="create the cloud container").set_defaults(fn=cmd_bootstrap)
     sub.add_parser("whoami", help="this run and its leases").set_defaults(fn=cmd_whoami)
+    sub.add_parser("setup", help="write the generated snapshot of how this project is wired").set_defaults(fn=cmd_setup)
     sub.add_parser("board", help="regenerate the read-only board").set_defaults(fn=cmd_board)
 
     for name, fn, arg in (("acquire", cmd_acquire, "key"), ("release", cmd_release, "key")):

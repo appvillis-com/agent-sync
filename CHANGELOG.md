@@ -3,6 +3,41 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.4.0 — 2026-07-29
+
+Found by simulating three agents working three repositories at once, entered from one
+umbrella — the arrangement this tool is for. Every defect below was invisible from inside
+a single checkout.
+
+### Fixed
+- **Every submodule agent ran isolated, in degraded mode, seeing nobody.** A submodule is
+  its own git repository, so the project root is the submodule and `.env.agent-sync` — which
+  lives in the superproject — was never found. Three agents entered from one umbrella and
+  coordinated with nothing, each reporting `ungated` while believing it was configured. The
+  env file is now located from the superproject and parent directories, so one credential
+  file serves the whole tree.
+- **A submodule's `reconcile` reported every umbrella decision as an orphan.** The as-built
+  log is shared by all repositories; id registers are per-repository, and a service repo
+  declares none because decisions live in the parent. Comparing the shared log against a
+  local register produced a wall of false findings — the loudest possible way to teach
+  people to ignore a check. Register checks are now scoped to what the checkout can judge,
+  and say plainly when they are not evaluated here.
+- **Regenerating the board from a submodule replaced the shared view with a narrower one.**
+  Four repositories wrote one page; last writer won. The board now carries only facts true
+  from every checkout, and repo-local findings moved to their own generated page.
+
+### Added
+- **`setup`** writes a generated snapshot of how *this* project is wired — registers,
+  guarded files, gates, the two documentation sources, what is written where, and what is
+  never deleted. Commit it and link it from the project's agent instructions so every agent
+  reads the same description of the pipeline instead of inferring it from behaviour. It is
+  generated rather than hand-written, because a hand-written description of a configuration
+  drifts from it, which is the exact failure this tool exists to surface.
+- **The lifetime and deletion protocol is now stated.** Nothing in a log is edited or
+  deleted: the logs are replayed in order, so removing a line silently rewrites a
+  conclusion other agents already acted on. Correct by appending. Generated pages are the
+  narrow exception, and one that has lost its marker is refused, not overwritten.
+
 ## 0.3.3 — 2026-07-29
 
 ### Fixed
