@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.3.2 — 2026-07-29
+
+### Fixed
+- **`reconcile` demanded an as-built record for an id nobody had taken.** The id scraper
+  matched every `DEC-\d+` token in a register, including the "Next free ID" pointer — the one
+  number that by definition is *not* allocated. Two symptoms, one cause: a permanent false
+  finding on the unallocated id, and a baseline stamped one higher than reality, which quietly
+  excused the newest real decision from ever being checked. The register's own
+  `nextFreeIdPattern` now identifies that pointer and subtracts it.
+  Found by running the new duty against this project rather than by reading the code.
+
 ## 0.3.1 — 2026-07-29
 
 ### Fixed

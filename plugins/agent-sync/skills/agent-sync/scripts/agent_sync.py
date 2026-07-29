@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -695,6 +695,26 @@ class Sync:
             files=files.replace("`", "'")[:200],
             note=text.replace("`", "'")[:400]))
 
+
+    def _allocated_ids(self, reg: str, spec: dict[str, Any]) -> set[str]:
+        """Ids that actually exist, excluding the register's "next free" pointer.
+
+        That line names the id nobody has taken yet. Scraping it as an allocated id
+        makes every reconcile demand an as-built record for a decision that has not
+        been written — and poisons the baseline with a number one higher than reality.
+        """
+        path = self.root / spec["file"]
+        if not path.exists():
+            return set()
+        text = path.read_text()
+        ids = set(re.findall(rf"\b{reg}-\d+\b", text))
+        pattern = spec.get("nextFreeIdPattern")
+        if pattern:
+            m = re.search(pattern, text)
+            if m:
+                ids.discard(f"{reg}-{m.group(1)}")
+        return ids
+
     def set_baseline(self) -> dict[str, int]:
         """Stamp today's highest id per register as the line before which nothing is
         expected to carry an as-built record. Idempotent-ish: re-stamping moves the
@@ -705,8 +725,7 @@ class Sync:
             path = self.root / spec["file"]
             if not path.exists():
                 continue
-            nums = [int(i.rsplit("-", 1)[1])
-                    for i in re.findall(rf"\b{reg}-\d+\b", path.read_text())]
+            nums = [int(i.rsplit("-", 1)[1]) for i in self._allocated_ids(reg, spec)]
             top = max(nums) if nums else 0
             self.adapter.log_append(oid, fmt_line(
                 "baseline", reg, self.rid, value=f"{top:04d}", repo=repo_name()))
@@ -752,7 +771,7 @@ class Sync:
             path = self.root / spec["file"]
             if not path.exists():
                 continue
-            ids = set(re.findall(rf"\b{reg}-\d+\b", path.read_text()))
+            ids = self._allocated_ids(reg, spec)
             base = baselines.get(reg)
             if base is None:
                 findings.append({
@@ -780,9 +799,7 @@ class Sync:
         #    that was never recorded as a decision.
         known: set[str] = set()
         for reg, spec in (self.cfg.get("idRegisters") or {}).items():
-            path = self.root / spec["file"]
-            if path.exists():
-                known |= set(re.findall(rf"\b{reg}-\d+\b", path.read_text()))
+            known |= self._allocated_ids(reg, spec)
         orphan = sorted({ev["key"] for ev in events
                          if ev["key"] != "-" and re.match(r"^[A-Z]+-\d+$", ev["key"])
                          and ev["key"] not in known})
