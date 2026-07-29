@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.1.0 — 2026-07-29
+
+The skill can now take **any** project from nothing to a validated setup on its own.
+
+### Added
+- **`check`** — validates the whole setup and refuses to call a broken one healthy. It fails
+  on a register whose allocation pattern matches nothing, a guard glob that matches no file
+  (a rule protecting nothing), a gate whose script is missing, a mirror source that is not
+  there, empty credentials, a `.gitignore` that misses the env file — or that file being
+  **tracked by git**, the one unrecoverable mistake here — a hand-edited or stale snapshot,
+  **a snapshot no agent instruction file links**, and a register with no baseline. Every one
+  of those failed for real during this tool's own adoption.
+- **`scaffold`** — creates the documentation architecture where it is absent: a decision
+  register with an allocation line and an `AGENTS.md` pointing at the generated snapshot. It
+  never touches an existing file. A tool that rewrites a project's conventions on adoption is
+  worse than one that does nothing.
+- The snapshot is stamped with a **hash of the configuration** it describes, so staleness
+  means the configuration moved on — not that a commit happened. Comparing commits was wrong
+  at both boundaries: a snapshot is generated before the commit that carries it, and the
+  config is usually added in that same commit, so the very first adoption always looked stale.
+
 ## 1.0.1 — 2026-07-29
 
 ### Fixed

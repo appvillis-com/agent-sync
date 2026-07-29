@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.0.1"
+  version: "1.1.0"
   author: appvillis-com
 ---
 
@@ -52,7 +52,37 @@ parse, and **fail loudly** once more than 2% is unparseable. Beware the silent
 pre-filter especially: a `continue` before the regex hides bad lines from the very
 counter meant to expose them.
 
-## Bringing this into an existing project
+## Bringing this into ANY project — the whole chain
+
+```
+scaffold  → create the documentation architecture, only where it is absent
+adopt     → read the repository, propose a config, write nothing
+init      → write the approved config + the gitignored env file
+            (operator pastes the token — never you)
+reconcile --set-baseline    → make history a counted backlog, once
+setup     → generate the snapshot that describes this project's wiring
+check     → validate the whole thing; non-zero if it is not healthy
+```
+
+**`check` is what makes the skill self-sufficient.** It refuses to call a setup healthy
+on any of: a register file that does not exist or whose allocation pattern matches
+nothing; a guard glob that matches no file (a rule that protects nothing); a claim-tag
+pattern with nothing to look for; a gate command whose script is missing; a mirror source
+that is not there; missing or empty credentials; a `.gitignore` that does not cover the
+env file — or the env file being **tracked by git**, which is the one unrecoverable
+mistake here; a missing, hand-edited or stale snapshot; **a snapshot no agent instruction
+file links**, because agents that cannot find it will infer the pipeline instead; and a
+register with no as-built baseline. Every one of those failed for real during this tool's
+own adoption.
+
+Run `check` after adopting, after changing the config, and in CI.
+
+**`scaffold` never overwrites.** It seeds a decision register with an allocation line and
+an `AGENTS.md` that points at the snapshot, and leaves every existing file untouched — a
+tool that rewrites a project's own conventions on adoption is worse than one that does
+nothing.
+
+## Existing project: start with `adopt`
 
 Run `adopt` before `init`. It reads the repository and prints what it found — id
 registers, registry files, gates — plus the decisions it **refuses to make for you**,
@@ -160,6 +190,8 @@ npx sshlg-skills install
 | `whoami` | Print this run's id and its held leases |
 | `setup` | Write the generated snapshot of how **this** project is wired, for agents to read |
 | `adopt` | Inspect an existing project and **propose** a config — writes nothing |
+| `scaffold` | Create the missing documentation architecture. Never overwrites |
+| `check` | Validate the whole setup end to end. Non-zero when it is not healthy |
 
 `$SKILL_DIR` is this skill's own directory. Every command reads
 `.claude/agent-sync.json` from the project root and needs no arguments beyond those

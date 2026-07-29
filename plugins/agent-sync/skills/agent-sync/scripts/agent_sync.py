@@ -22,6 +22,8 @@ import random
 import re
 import stat
 import subprocess
+import hashlib
+import shutil
 import sys
 import time
 import urllib.error
@@ -30,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -1210,6 +1212,16 @@ class Sync:
                              f"| {ev.get('repo','—')} |")
         return "\n".join(lines) + "\n"
 
+    def config_digest(self) -> str:
+        """Identity of the configuration this snapshot describes.
+
+        Stamping the commit instead made the very first adoption look stale: the config
+        is added in the same commit as the snapshot, so a commit-range diff always found
+        a change. A content hash has no such boundary.
+        """
+        raw = (self.root / CONFIG_PATH).read_bytes()
+        return hashlib.sha256(raw).hexdigest()[:12]
+
     def setup_snapshot(self) -> str:
         """A snapshot of how THIS project is actually wired, generated from the config.
 
@@ -1226,7 +1238,8 @@ class Sync:
         mirror = cfg.get("mirror") or {}
         env_path = find_env_file(self.root)
         L = [
-            f"{GENERATED_MARKER} source={repo_name()}@{head_sha()} at={now_iso()} "
+            f"{GENERATED_MARKER} source={repo_name()}@{head_sha()} "
+            f"cfg={self.config_digest()} at={now_iso()} "
             "— regenerate with `agent_sync.py setup`, do not hand-edit -->",
             "",
             f"# How documentation and coordination work in {repo_name()}",
@@ -1842,6 +1855,281 @@ def cmd_adopt(_args: argparse.Namespace) -> int:
     return 0
 
 
+DECISIONS_SEED = """# Decisions
+
+Every settled decision about this project, append-only. A decision is any answer that
+shapes the product, architecture, scope, security, data or process — recorded here so it
+is never lost to a chat log.
+
+**Reserve an id before you write one.** Reading the line below is not reserving it: two
+agents read the same number and both use it. Run `agent-sync reserve DEC`.
+
+**Next free ID:** `DEC-0001`
+
+---
+
+## How to write one
+
+```
+### DEC-0001 — a title that states the decision, not the topic
+- **Date:** YYYY-MM-DD · **Status:** Accepted
+- **Context:** what forced the decision, with evidence
+- **Decision:** what we do now, in numbered clauses
+- **Consequences / affects:** every document this changes — each MUST then cite this id
+- **Source:** where this came from
+```
+
+**Never edit a decision to change it.** Add a new one that names what it supersedes, and
+annotate the old entry's status line. The body of the old entry stays as history.
+
+---
+"""
+
+AGENTS_SEED = """# AGENTS.md — working protocol
+
+**Read [`{snapshot}`]({snapshot}) first.** It is generated from the live configuration and
+states how documentation and coordination work here: which registers exist, which files
+need a lease, which gates run, what is written where, and what is never deleted.
+
+## Before you write anything
+
+Several agents may work this repository at once.
+
+1. `agent-sync status` — who else is working, and what changed while you were away.
+2. `agent-sync reconcile` — the git documents say how it *should* be, the as-built record
+   says how it *is*. Resolve every divergence **before** writing code.
+3. `agent-sync acquire <TASK-ID>` — the guarded registers refuse an unleased write.
+4. Reserve any new id with `agent-sync reserve <REGISTER>` before writing it.
+
+## When you finish
+
+1. `agent-sync record` — what you actually built, with the decision id and the files.
+2. Update the git documents in the **same** change.
+3. `agent-sync reconcile` again, then `agent-sync board`.
+4. `agent-sync release <TASK-ID>` — on every path, including failure.
+
+## The one rule that matters most
+
+**No decision lives only in chat.** Record it in the decision register, propagate it to
+every document it affects, and commit referencing the id.
+"""
+
+
+def cmd_scaffold(args: argparse.Namespace) -> int:
+    """Create the documentation architecture a project needs to be coordinated.
+
+    Only what is absent, never a line over anything that exists. A tool that rewrites a
+    project's own conventions on adoption is worse than one that does nothing, so this
+    seeds the minimum — a register with an allocation line, and an agent protocol that
+    points at the generated snapshot — and leaves every existing file alone.
+    """
+    root = project_root()
+    os.chdir(root)
+    docs = root / "docs" if (root / "docs").is_dir() or args.docs_dir else root
+    snapshot = "docs/AGENT_SYNC.md" if docs != root else "AGENT_SYNC.md"
+
+    created, skipped = [], []
+
+    def seed(path: Path, body: str) -> None:
+        if path.exists():
+            skipped.append(str(path.relative_to(root)))
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+        created.append(str(path.relative_to(root)))
+
+    seed(docs / "DECISIONS.md", DECISIONS_SEED)
+    seed(root / "AGENTS.md", AGENTS_SEED.format(snapshot=snapshot))
+
+    for c in created:
+        print(f"  + {c}")
+    for s in skipped:
+        print(f"  · {s} already exists — untouched")
+
+    print()
+    if created:
+        print("Scaffolded. Now: `adopt` to see the config it implies, `init` to write it,")
+        print("`reconcile --set-baseline` once, `setup` to generate the snapshot, `check`.")
+    else:
+        print("Nothing to scaffold — this project already has the files. Run `adopt`.")
+    return 0
+
+
+def cmd_check(_args: argparse.Namespace) -> int:
+    """Validate the whole setup, end to end, and refuse to call a broken one healthy.
+
+    Every item here failed for real at some point in this tool's own adoption. A glob
+    that matches nothing, a register pattern that matches nothing, a gate command that
+    does not exist, a snapshot nobody links — each looks like a working install and
+    protects nothing.
+    """
+    root = project_root()
+    os.chdir(root)
+    load_env_file(root)
+    problems: list[str] = []
+    warn: list[str] = []
+    ok: list[str] = []
+
+    cfg_path = root / CONFIG_PATH
+    if not cfg_path.exists():
+        print("✗ not initialised — run `adopt`, then `init`")
+        return 1
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except json.JSONDecodeError as exc:
+        print(f"✗ {CONFIG_PATH} is not valid JSON: {exc}")
+        return 1
+    ok.append(f"config parses ({CONFIG_PATH})")
+
+    if cfg.get("backend") not in ("outline", "fs"):
+        problems.append(f"backend '{cfg.get('backend')}' is not a known adapter")
+    unknown = set(cfg) - {"$schema", "backend", "leaseTtlSeconds", "renewIntervalSeconds",
+                          "gated", "idRegisters", "guardedFiles", "claimTags", "gates",
+                          "mirror", "setupFile"}
+    for k in sorted(unknown):
+        problems.append(f"config key '{k}' is not in the schema — it will be ignored")
+
+    # Registers must exist AND their allocation pattern must actually match.
+    regs = cfg.get("idRegisters") or {}
+    for reg, spec in sorted(regs.items()):
+        f = root / spec.get("file", "")
+        if not f.exists():
+            problems.append(f"register {reg}: file '{spec.get('file')}' does not exist")
+            continue
+        text = f.read_text()
+        try:
+            m = re.search(spec.get("nextFreeIdPattern", ""), text)
+        except re.error as exc:
+            problems.append(f"register {reg}: nextFreeIdPattern is not valid regex ({exc})")
+            continue
+        if not m:
+            problems.append(f"register {reg}: nextFreeIdPattern matches nothing in "
+                            f"{spec['file']} — ids cannot be reserved, only guessed")
+        else:
+            ok.append(f"register {reg} allocates from {spec['file']} ({reg}-{m.group(1)})")
+
+    # A guard glob that matches nothing protects nothing.
+    for pattern in (cfg.get("guardedFiles") or []):
+        hits = [q for q in root.glob(pattern) if q.is_file()]
+        if not hits:
+            problems.append(f"guarded pattern '{pattern}' matches no file — it guards nothing")
+    if cfg.get("guardedFiles"):
+        ok.append(f"{len(cfg['guardedFiles'])} guarded pattern(s) declared")
+    else:
+        warn.append("no guarded files — nothing requires a lease in this repository")
+
+    for pattern, spec in (cfg.get("claimTags") or {}).items():
+        if not [q for q in root.glob(pattern) if q.is_file()]:
+            problems.append(f"claimTags pattern '{pattern}' matches no file")
+        elif not spec.get("open"):
+            problems.append(f"claimTags '{pattern}' has no `open` marker to look for")
+
+    for cmd in (cfg.get("gates") or []):
+        exe = cmd.split()[0]
+        target = cmd.split()[1] if len(cmd.split()) > 1 else ""
+        if target and not target.startswith("-") and "/" in target and not (root / target).exists():
+            problems.append(f"gate '{cmd}': {target} does not exist")
+        elif not shutil.which(exe):
+            warn.append(f"gate '{cmd}': {exe} is not on PATH here")
+    if cfg.get("gates"):
+        ok.append(f"{len(cfg['gates'])} gate command(s) declared")
+
+    mirror = cfg.get("mirror") or {}
+    if mirror.get("enabled"):
+        for src in mirror.get("sources") or []:
+            if not (root / src).exists():
+                problems.append(f"mirror source '{src}' does not exist")
+        if not mirror.get("sources"):
+            problems.append("mirror is enabled with no sources — it renders nothing")
+
+    # Identity and reachability.
+    env = find_env_file(root)
+    if cfg.get("backend") == "outline":
+        if env is None:
+            problems.append(f"no {ENV_FILE} found here or in any parent — the backend "
+                            "cannot be reached, and every run silently degrades")
+        else:
+            ok.append(f"credentials file found at {env}")
+            missing = [k for k in ("AGENT_SYNC_OUTLINE_URL", "AGENT_SYNC_OUTLINE_TOKEN")
+                       if not os.environ.get(k)]
+            if missing:
+                problems.append(f"{', '.join(missing)} is empty — runs will degrade to `fs`")
+            else:
+                try:
+                    OutlineAdapter().resolve_collection()
+                    ok.append("knowledge base reachable and the collection resolves")
+                except Fail as exc:
+                    problems.append(f"knowledge base unreachable: {exc}")
+
+    # Ignore rules — a committed token is the one unrecoverable mistake here.
+    gi = (root / ".gitignore").read_text() if (root / ".gitignore").exists() else ""
+    for entry in (str(ENV_FILE), f"{STATE_DIR}/"):
+        if entry not in gi:
+            problems.append(f".gitignore does not cover '{entry}'")
+    tracked = git("ls-files", str(ENV_FILE))
+    if tracked:
+        problems.append(f"{ENV_FILE} IS TRACKED BY GIT — it holds a token; remove it now")
+
+    # The snapshot, and whether anything points at it.
+    snap = root / (cfg.get("setupFile") or
+                   ("docs/AGENT_SYNC.md" if (root / "docs").is_dir() else "AGENT_SYNC.md"))
+    if not snap.exists():
+        problems.append(f"no setup snapshot at {snap.relative_to(root)} — run `setup`")
+    else:
+        head = snap.read_text().splitlines()[0] if snap.read_text() else ""
+        if GENERATED_MARKER not in head:
+            problems.append(f"{snap.relative_to(root)} lost its generated marker — "
+                            "someone hand-edited it; regenerate or keep it out of the way")
+        else:
+            # Stale means "the configuration moved on". Comparing commits was wrong at
+            # both boundaries: a snapshot is generated before the commit that carries it,
+            # and the config is often added in that same commit. A content hash is exact.
+            stamped = re.search(r"cfg=(\w+)", head)
+            actual = hashlib.sha256((root / CONFIG_PATH).read_bytes()).hexdigest()[:12]
+            if not stamped:
+                warn.append("snapshot predates configuration stamping — regenerate with `setup`")
+            elif stamped.group(1) != actual:
+                problems.append("the configuration changed since the snapshot was "
+                                "generated — regenerate with `setup`")
+            else:
+                ok.append("setup snapshot present and describes the current configuration")
+        linked = [f for f in ("AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md")
+                  if (root / f).exists() and snap.name in (root / f).read_text()]
+        if linked:
+            ok.append(f"snapshot linked from {', '.join(linked)}")
+        else:
+            problems.append("no agent instruction file links the snapshot — agents will "
+                            "not find it, and will infer the pipeline instead")
+
+    # Baselines: without one, reconcile cannot separate history from new work.
+    if regs:
+        try:
+            s = Sync()
+            ev, _ = s.events("asbuilt")
+            based = {e["key"] for e in ev if e["op"] == "baseline"}
+            for reg in regs:
+                if reg not in based:
+                    warn.append(f"register {reg} has no as-built baseline — "
+                                "run `reconcile --set-baseline` once")
+        except Fail:
+            pass
+
+    for line in ok:
+        print(f"  ✓ {line}")
+    for line in warn:
+        print(f"  ! {line}")
+    for line in problems:
+        print(f"  ✗ {line}")
+    print()
+    if problems:
+        print(f"{len(problems)} problem(s) — this setup is NOT healthy. Fix them before "
+              "telling anyone the project is coordinated.")
+        return 1
+    print(f"setup healthy ({len(ok)} checks passed"
+          + (f", {len(warn)} warning(s)" if warn else "") + ")")
+    return 0
+
+
 def cmd_setup(_args: argparse.Namespace) -> int:
     s = Sync()
     path = s.setup_path()
@@ -1883,6 +2171,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("whoami", help="this run and its leases").set_defaults(fn=cmd_whoami)
     sub.add_parser("setup", help="write the generated snapshot of how this project is wired").set_defaults(fn=cmd_setup)
     sub.add_parser("adopt", help="inspect an existing project and propose a config (writes nothing)").set_defaults(fn=cmd_adopt)
+    sub.add_parser("check", help="validate the whole setup; non-zero if it is not healthy").set_defaults(fn=cmd_check)
+    sc = sub.add_parser("scaffold", help="create the missing documentation architecture (never overwrites)")
+    sc.add_argument("--docs-dir", action="store_true", help="put the register under docs/ even if it does not exist yet")
+    sc.set_defaults(fn=cmd_scaffold)
     bd = sub.add_parser("board", help="regenerate the read-only board")
     bd.add_argument("--mirror", action="store_true",
                     help="also render the configured git documents into the plane")
