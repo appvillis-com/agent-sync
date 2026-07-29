@@ -4,18 +4,42 @@
 [![npm](https://img.shields.io/npm/v/agent-sync)](https://www.npmjs.com/package/agent-sync)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**Several coding agents, one repository, no collisions.**
+**Several coding agents, one repository, no collisions — and each one can see what the
+others are doing.**
 
-When more than one agent works a project at the same time, the coordination
-substrate most teams already have — a decisions log, a roadmap, a board, per-repo
-task files — stops being enough. Every one of those is a file edited by hand. That
-works for people taking turns and fails for agents working at once:
+`agent-sync` is an agent skill (plus a Claude Code plugin) that gives concurrent
+coding agents a coordination plane: leases with a TTL, race-free id reservation, a run
+journal, a cross-repo signal feed and a generated board.
+
+- [The problem](#the-problem)
+- [What you get](#what-you-get)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Update](#update)
+- [Set up a project](#set-up-a-project)
+- [Everyday use](#everyday-use)
+- [Configuration](#configuration)
+- [Backends](#backends)
+- [Enforcement hooks](#enforcement-hooks)
+- [Where it plugs into task-pipeline](#where-it-plugs-into-task-pipeline)
+- [Limits, stated plainly](#limits-stated-plainly)
+- [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
+- [Develop and verify](#develop-and-verify)
+
+## The problem
+
+When more than one agent works a project at the same time, the coordination substrate
+most teams already have — a decisions log, a roadmap, a board, per-repo task files —
+stops being enough. Every one of those is a file edited by hand. That works for people
+taking turns and fails for agents working at once:
 
 | What goes wrong | Why |
 |---|---|
 | Two agents mint the same decision id | "Next free id" is a line in a file; reading it is not reserving it |
 | A claim blocks a task forever | A role name is not a holder, and it has no expiry |
 | Two agents start the same task | Git shows what was committed, never what is in flight |
+| An agent is blocked but not informed | Knowing a task is taken is not knowing who has it or what they touch |
 | Merge conflicts on every shared register | Everyone writes the same three files |
 | A cross-repo dependency is never noticed | Filing one notifies nobody |
 
@@ -25,29 +49,43 @@ works for people taking turns and fails for agents working at once:
 
 > **Git is the record plane. The cloud is the coordination plane.**
 
-A fact that must survive is written to git first and referenced from the cloud. A
-fact about *who is doing what right now* lives in the cloud and expires. No cloud
-object is ever the only home of a durable fact, so your single-source-of-truth rules
-stay intact.
+A fact that must survive is written to git first and referenced from the cloud. A fact
+about *who is doing what right now* lives in the cloud and expires. No cloud object is
+ever the only home of a durable fact, so your single-source-of-truth rules stay intact.
 
 Leases and id reservations are decided by **replaying one append-only log**. No
-supported knowledge base offers compare-and-swap, so the protocol never asks for
-one: append, read back, and let document order decide. Every agent replaying the
-same log reaches the same answer.
+supported knowledge base offers compare-and-swap, so the protocol never asks for one:
+append, read back, and let document order decide. Every agent replaying the same log
+reaches the same answer, without a lock server and without trusting anyone's clock.
 
 ## What you get
 
 - **Leases with a TTL** — claim a task, renew automatically, steal an expired one.
   Stealing is visible in the log, never silent.
+- **Awareness, not just exclusion** — `status` lists every *other* run's live holdings,
+  so an agent learns who holds a task and what they are touching, instead of only that
+  it is taken.
 - **Race-free id reservation** — positional allocation over the log, so two agents
   cannot be handed one number.
 - **A run journal** — what each run did, with commits, gate results and evidence.
-- **A cross-repo signal feed** — `filed → accepted → delivered → closed`, so a
-  producer learns a dependency was filed against them.
-- **A generated board** — machine-written, commit-stamped, and it refuses to
-  overwrite a page a human took over.
-- **Enforcement hooks** for Claude Code that deny an edit to a guarded register file
-  without a live lease.
+- **A cross-repo signal feed** — `filed → accepted → delivered → closed`. `status`
+  surfaces what landed since this run last looked, watermarked per run so it stays quiet
+  until something actually changes.
+- **A generated board** — machine-written, commit-stamped, and it refuses to overwrite a
+  page a human took over.
+- **Enforcement hooks** for Claude Code that deny an edit to a guarded register file, or
+  a commit staging one, without a live lease.
+
+## Requirements
+
+| Requirement | Why | Check |
+|---|---|---|
+| **python3 ≥ 3.9** | the coordinator is one stdlib-only script — HTTP included, nothing to `pip install` | `python3 --version` |
+| **git** | the record plane, and the fallback lease store | `git --version` |
+| **bash** | the four Claude Code hook scripts | `bash --version` |
+| **Node ≥ 18** | only for the `npx agent-sync` installer | `node --version` |
+| **[task-pipeline](https://github.com/ssheleg/task-pipeline)** | `agent-sync` supplies stages, it does not define them — without it `status` prints one line and stops | `npx sshlg-skills install` |
+| A knowledge-base instance *(optional)* | real leases shared across machines; without one the `fs` backend runs **degraded** | — |
 
 ## Install
 
@@ -56,22 +94,74 @@ npx agent-sync install
 ```
 
 Claude Code gets the plugin; every other agent gets the skill through the
-[skills CLI](https://github.com/vercel-labs/skills); the duplicate plain copy in
-`~/.claude/skills/` is pruned, because that shadow silently serves a stale skill.
+[skills CLI](https://github.com/vercel-labs/skills). The duplicate plain copy in
+`~/.claude/skills/` is pruned afterwards, because that shadow silently serves a stale
+skill over the installed plugin — **one channel per agent** is the rule.
 
-Or from GitHub, tracking `main`:
+Restart Claude Code after installing, so it picks the plugin up.
+
+<details>
+<summary>Other install routes</summary>
+
+Track `main` from GitHub instead of the npm release:
 
 ```bash
 npx github:appvillis-com/agent-sync install
 ```
 
-Claude Code only:
+Claude Code only, no skills CLI:
+
+```bash
+npx agent-sync install --claude-only
+```
+
+Pick which agents the skills CLI installs for:
+
+```bash
+npx agent-sync install --agent cursor,codex
+```
+
+Or add the plugin by hand — the full `<name>@<name>` form is required:
 
 ```bash
 claude plugin marketplace add appvillis-com/agent-sync && claude plugin install agent-sync@agent-sync
 ```
 
-## First run
+</details>
+
+## Update
+
+**agent-sync itself** — update every channel you installed, then restart Claude Code:
+
+```bash
+claude plugin marketplace update agent-sync && claude plugin update agent-sync@agent-sync && npx --yes skills update agent-sync --global --yes
+```
+
+Re-running the installer works too, but pin `@latest` or npx may serve you its cache:
+
+```bash
+npx agent-sync@latest install
+```
+
+Check what you are actually running — the plugin and the skill must report the same
+version, and a mismatch means one channel is stale:
+
+```bash
+claude plugin list | grep agent-sync
+python3 ~/.claude/plugins/cache/*/agent-sync/*/skills/agent-sync/scripts/agent_sync.py --version
+```
+
+**Its dependencies** — `task-pipeline` (and the rest of the same family) come from one
+installer, which also prunes the shadow copies:
+
+```bash
+npx sshlg-skills install
+```
+
+Nothing else to update: the coordinator is stdlib-only python, and the npm package has
+zero runtime dependencies.
+
+## Set up a project
 
 **Initialisation is the first command, and it asks a question rather than guessing.**
 
@@ -79,83 +169,212 @@ claude plugin marketplace add appvillis-com/agent-sync && claude plugin install 
 /agent-sync init
 ```
 
-The agent asks where coordination state should live — a knowledge cloud, or local
-files — and, for the cloud, the instance URL. Then it writes:
+The agent asks where coordination state should live — a knowledge cloud, or local files
+— and, for the cloud, the instance URL. Then it writes two files:
 
-- `.claude/agent-sync.json` — **shape**, committed: TTLs, guarded files, registers, gates;
-- `.env.agent-sync` — **identity**, mode 600, added to `.gitignore`, with the token
-  line left **empty**.
+| File | Holds | Committed? |
+|---|---|---|
+| `.claude/agent-sync.json` | **shape** — backend, TTLs, guarded files, registers, gates | yes |
+| `.env.agent-sync` | **identity** — instance URL, token, collection id | **no** — mode 600, added to `.gitignore` |
 
-Creating the API token and pasting it into that line is your step, and it stays
-yours: the tool never asks for a token in chat, never echoes one, and never passes
-one as a command-line argument.
+The token line is written **empty**. Creating the API token in your own instance and
+pasting it into that line is your step, and it stays yours: the tool never asks for a
+token in chat, never echoes one, and never passes one as a command-line argument.
+
+Load the environment before running agents:
 
 ```bash
 set -a && . ./.env.agent-sync && set +a
 ```
 
+Then create the container the coordination log lives in, once per project, and paste the
+id it prints into `AGENT_SYNC_OUTLINE_COLLECTION`:
+
+```bash
+/agent-sync bootstrap
+```
+
+Verify the setup — idempotent, repairs what is missing, and names exactly one next
+action:
+
+```bash
+/agent-sync status
+```
+
+## Everyday use
+
+In an agent session you use the slash command (`/agent-sync claim ASC-072`); the same
+commands run directly against the coordinator script, which is what the hooks and CI do:
+
+```bash
+python3 "$SKILL_DIR/scripts/agent_sync.py" <command>
+```
+
+| Command | Does |
+|---|---|
+| `init` | **Run first.** Ask where state lives, write config + gitignored env file, print your step |
+| `status` | Inspect, repair, report — including other runs' leases and signals new since you last looked |
+| `bootstrap` | Create the cloud container and print the id to paste into the env file |
+| `acquire <KEY>` | Take the lease on a task id. Prints `won`, or `lost <holder>` |
+| `renew <KEY>` | Extend the lease. In Claude Code the `PostToolUse` hook does this for you |
+| `release <KEY>` | Give the lease back. Always, including on failure |
+| `reserve <REG>` | Reserve the next id in a register (`DEC`, `OQ`, `DEP`, …). Prints the id |
+| `release-id <REG> <ID>` | Return an id you did not end up writing to git |
+| `journal <text>` | Append one line to this run's journal |
+| `signal <DEP-ID> <state>` | Move a cross-repo dependency: `filed`/`accepted`/`delivered`/`closed`/`refused` |
+| `guard <path>` | May this run write that path? Exit 0 = yes, 2 = no |
+| `board` | Regenerate the read-only board and the mirror from git |
+| `whoami` | Print this run's id and its held leases |
+
+The shape that matters:
+
+```
+acquire → do the work → release
+```
+
+Never skip `release`, including when the work failed. An abandoned lease blocks the task
+until its TTL expires, and the next agent cannot tell "in progress" from "crashed an hour
+ago". A lease is a promise to come back.
+
+**The lease is not the claim.** The lease says who holds the task *now* and expires; the
+durable claim is the tag in git (`[name]`, `todo (claimed: <role>)`). `acquire` writes
+that tag through and `release` clears it, so one fact keeps one home.
+
+## Configuration
+
+`.claude/agent-sync.json` — committed, validated against
+[`agent-sync.schema.json`](agent-sync.schema.json), starting point in
+[`agent-sync.example.json`](agent-sync.example.json):
+
+| Key | Meaning |
+|---|---|
+| `backend` | `outline` or `fs` (required) |
+| `leaseTtlSeconds` | how long a lease survives without a renew (default 2700) |
+| `renewIntervalSeconds` | how often a live run renews (default 300) |
+| `gated` | whether runs may be recorded as enforced at all |
+| `idRegisters` | register → the git file that owns it, and its "next free id" pattern |
+| `guardedFiles` | registry files no run may edit without a live lease |
+| `claimTags` | file → the durable claim tag `acquire`/`release` writes through |
+| `gates` | commands the pipeline stages run as gates |
+| `mirror` | which git files are rendered into the read-only mirror |
+
+`.env.agent-sync` — gitignored, mode 600:
+
+```
+AGENT_SYNC_BACKEND=outline
+AGENT_SYNC_OUTLINE_URL=https://<your-instance>
+AGENT_SYNC_OUTLINE_TOKEN=          # you fill this line, nobody else
+AGENT_SYNC_OUTLINE_COLLECTION=     # printed by `bootstrap`
+```
+
+Never write a host name or a token into the config, a test, an example or a commit. If
+an agent offers to handle a token for you, that is the wrong answer.
+
+**A submodule's config declares only its own registers.** Cross-repository facts belong
+to the parent repository; a service repo listing the parent's decision register is a
+configuration defect.
+
 ## Backends
 
 The knowledge store is a **pluggable adapter** — six primitives, three declared
-capabilities. Nothing about a specific vendor is baked in, and no instance address
-ships in this repository.
+capabilities. Nothing about a specific vendor is baked in, and no instance address ships
+in this repository.
 
 | Backend | Lease authority | Notes |
 |---|---|---|
 | `outline` | yes | [Outline](https://www.getoutline.com), hosted or self-hosted. Server-side append gives a total order without compare-and-swap |
 | `fs` | no — **degraded** | Local files. Real mutual exclusion between agents on one machine, none across machines. Every run is recorded `ungated` |
 
-**A backend that cannot arbitrate says so.** When the adapter is not the lease
-authority, `agent-sync` announces it, falls back to git-file leases, and marks runs
-`ungated` — because a lease that is not actually exclusive is worse than none, and
-the other agent has stopped checking.
+**A backend that cannot arbitrate says so.** When the adapter is not the lease authority,
+`agent-sync` announces it, falls back to git-file leases, and marks runs `ungated` —
+because a lease that is not actually exclusive is worse than none, and the other agent
+has stopped checking.
 
-## Requires task-pipeline
+Adding one: read
+[`references/adapter-contract.md`](plugins/agent-sync/skills/agent-sync/references/adapter-contract.md).
 
-`agent-sync` supplies stages; it does not define them. It binds to
-[task-pipeline](https://github.com/ssheleg/task-pipeline)'s stages 0, 3, 4, 5, 9
-and 10. If task-pipeline is absent it prints one line and stops rather than
-improvising a substitute flow:
+## Enforcement hooks
 
-```bash
-npx sshlg-skills install
-```
+Installed with the Claude Code plugin. Every hook exits immediately in projects without
+`.claude/agent-sync.json`, so installing globally changes nothing elsewhere.
 
-## What ships
+| Hook | Runs | Effect |
+|---|---|---|
+| `SessionStart` | startup, resume | `status` — the board summary, other runs, one next action |
+| `PreToolUse` | `Edit`/`Write`/`MultiEdit`/`NotebookEdit`, and `git commit` | Denies the edit (exit 2) when the path is guarded and this run holds no lease; a `git commit` is checked against every staged path |
+| `PostToolUse` | every tool call | Throttled `renew` — touches the network at most once per `renewIntervalSeconds` |
+| `SessionEnd` | session end | Releases every lease this run holds |
 
-One skill, `agent-sync`, with its contracts beside it:
+Details and removal:
+[`references/hooks.md`](plugins/agent-sync/skills/agent-sync/references/hooks.md).
 
-| File | Read it when |
-|---|---|
-| `references/adapter-contract.md` | adding or auditing a knowledge backend |
-| `references/lease-protocol.md` | changing acquisition, expiry, stealing or id allocation |
-| `references/backend-outline.md` | making any Outline API call, or debugging one |
-| `references/backend-fs.md` | running without a cloud backend, or explaining degraded mode |
-| `references/pipeline-binding.md` | wiring `pipeline.json`, or adding a stage hook |
-| `references/hooks.md` | installing, debugging or removing the Claude Code hooks |
+## Where it plugs into task-pipeline
 
-Plus `scripts/agent_sync.py` (stdlib only), the four hook scripts, and
-`agent-sync.schema.json` for the project config.
+`agent-sync` supplies stages; it does not define them. It binds to task-pipeline's
+stages 0, 3, 4, 5, 9 and 10 — lease before the brief is committed, reserve ids before
+they reach git, register file ownership for parallel groups, signal and regenerate the
+board at docs, release everything at acceptance. Wiring:
+[`references/pipeline-binding.md`](plugins/agent-sync/skills/agent-sync/references/pipeline-binding.md).
 
 ## Limits, stated plainly
 
-- **Hooks are Claude Code only.** On Cursor, Codex and the rest there is no
-  `PreToolUse`, so nothing blocks a guarded edit; the same checks run as a
-  self-check and the run is recorded `ungated`. Read the board's column rather than
-  assuming.
-- **Ordering, not clocks.** Document order decides who holds a lease; timestamps
-  only expire one. Agents' clocks differ and the protocol does not depend on them.
-- **A reserved id that never reaches git is reported, not reclaimed.** A
-  half-written decision on a branch is not an unused number.
+- **Hooks are Claude Code only.** On Cursor, Codex and the rest there is no `PreToolUse`,
+  so nothing blocks a guarded edit; the same checks run as a self-check and the run is
+  recorded `ungated`. Read the board's column rather than assuming.
+- **Ordering, not clocks.** Document order decides who holds a lease; timestamps only
+  expire one. Agents' clocks differ and the protocol does not depend on them.
+- **A reserved id that never reaches git is reported, not reclaimed.** A half-written
+  decision on a branch is not an unused number.
+- **`fs` is not cross-machine.** It is a real mutex between agents on one host and
+  nothing more, which is why it never claims lease authority.
 
-## Verify a change offline
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `task-pipeline is not installed` and `status` stops | Intentional — there are no stages to bind to. `npx sshlg-skills install` |
+| `⚠ ungated backend — this lease is advisory` | The `fs` backend, or missing credentials. Expected; configure `outline` for enforced leases |
+| Every `acquire` reports `lost` | Check the holder in `status`. If the log itself is unreadable, `acquire` raises instead — that is a parse failure, not a race |
+| Guarded edit blocked in Claude Code | Working as designed: `acquire` the key first, or unstage the file |
+| Guarded edit *not* blocked | You are not on Claude Code. Run `guard <path>` yourself; the run is `ungated` |
+| `AGENT_SYNC_OUTLINE_COLLECTION is not set` | Run `bootstrap` and paste the printed id into `.env.agent-sync` |
+| An HTTP `400`/`403` from the backend | The response body is surfaced verbatim — read it; a bad collection id and a bad token look nothing alike |
+| A stale skill after updating | Two channels serving one skill. Delete `~/.claude/skills/agent-sync` and keep the plugin |
+| The board refuses to write | A human took the page over (no generated marker on line 1). Reported, never overwritten |
+
+## Uninstall
 
 ```bash
-python3 test/validate.py
-python3 test/validate.py --self-test
+claude plugin uninstall agent-sync@agent-sync
+npx --yes skills remove agent-sync --global --yes
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+Project files stay where they are; delete `.claude/agent-sync.json`, `.env.agent-sync`
+and `.agent-sync/` if you want the project clean too.
+
+## Develop and verify
+
+```bash
+python3 test/validate.py             # manifests, version sync, no host/credential leaks
+python3 test/validate.py --self-test # the validator must still be able to fail
+npm test                             # both of the above
+```
+
+What ships: one skill (`agent-sync`), `scripts/agent_sync.py` (stdlib only), four hook
+scripts, the slash command, `agent-sync.schema.json`, and six reference contracts the
+agent loads on their own trigger rather than by default:
+
+| Reference | Read it when |
+|---|---|
+| [`adapter-contract.md`](plugins/agent-sync/skills/agent-sync/references/adapter-contract.md) | adding or auditing a knowledge backend |
+| [`lease-protocol.md`](plugins/agent-sync/skills/agent-sync/references/lease-protocol.md) | changing acquisition, expiry, stealing or id allocation |
+| [`backend-outline.md`](plugins/agent-sync/skills/agent-sync/references/backend-outline.md) | making any Outline API call, or debugging one |
+| [`backend-fs.md`](plugins/agent-sync/skills/agent-sync/references/backend-fs.md) | running without a cloud backend, or explaining degraded mode |
+| [`pipeline-binding.md`](plugins/agent-sync/skills/agent-sync/references/pipeline-binding.md) | wiring `pipeline.json`, or adding a stage hook |
+| [`hooks.md`](plugins/agent-sync/skills/agent-sync/references/hooks.md) | installing, debugging or removing the Claude Code hooks |
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Security
+reports: [SECURITY.md](SECURITY.md).
 
 ## License
 
