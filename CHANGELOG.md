@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.2 — 2026-07-29
+
+### Changed
+- **The npm package is `@ssheleg/agent-sync`.** Unscoped `agent-sync` was rejected on publish
+  with a 403: npm's name-similarity policy fires only on `PUT`, so `npm view` reporting E404
+  ("free") predicts nothing — the collision was with an existing `agentsync`. Scoped names are
+  exempt from that policy, which is the documented fix.
+- **The command is still `agent-sync`.** A package's `bin` name is independent of its package
+  name, so nothing about daily use changes; only the install line grows a scope.
+- GitHub install (`npx github:appvillis-com/agent-sync`) and the Claude Code plugin are
+  unaffected — the registry only ever bought the short name.
+
 ## 1.2.1 — 2026-07-29
 
 ### Fixed — documentation that contradicted the code

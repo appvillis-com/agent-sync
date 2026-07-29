@@ -1,7 +1,7 @@
 # agent-sync
 
 [![CI](https://github.com/appvillis-com/agent-sync/actions/workflows/validate.yml/badge.svg)](https://github.com/appvillis-com/agent-sync/actions/workflows/validate.yml)
-[![npm](https://img.shields.io/npm/v/agent-sync)](https://www.npmjs.com/package/agent-sync)
+[![npm](https://img.shields.io/npm/v/%40ssheleg%2Fagent-sync)](https://www.npmjs.com/package/@ssheleg/agent-sync)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **Several coding agents, one repository, no collisions — and each one can see what the
@@ -89,14 +89,14 @@ and every reader computes the same answer.
 | **python3 ≥ 3.9** | the coordinator is one stdlib-only script — HTTP included, nothing to `pip install` | `python3 --version` |
 | **git** | the record plane, and the cross-machine lease store | `git --version` |
 | **bash** | the four Claude Code hook scripts | `bash --version` |
-| **Node ≥ 18** | only for the `npx agent-sync` installer | `node --version` |
+| **Node ≥ 18** | only for the `npx @ssheleg/agent-sync` installer | `node --version` |
 | **[task-pipeline](https://github.com/ssheleg/task-pipeline)** | `agent-sync` supplies stages, it does not define them — without it `status` prints one line and stops | `npx sshlg-skills install` |
 | A knowledge-base instance *(optional)* | the shared record, awareness and board; without one the `fs` backend keeps leases but loses cross-agent visibility | — |
 
 ## Install
 
 ```bash
-npx agent-sync install
+npx @ssheleg/agent-sync install
 ```
 
 Claude Code gets the plugin; every other agent gets the skill through the
@@ -118,13 +118,13 @@ npx github:appvillis-com/agent-sync install
 Claude Code only, no skills CLI:
 
 ```bash
-npx agent-sync install --claude-only
+npx @ssheleg/agent-sync install --claude-only
 ```
 
 Pick which agents the skills CLI installs for:
 
 ```bash
-npx agent-sync install --agent cursor,codex
+npx @ssheleg/agent-sync install --agent cursor,codex
 ```
 
 Or add the plugin by hand — the full `<name>@<name>` form is required:
@@ -146,7 +146,7 @@ claude plugin marketplace update agent-sync && claude plugin update agent-sync@a
 Re-running the installer works too, but pin `@latest` or npx may serve you its cache:
 
 ```bash
-npx agent-sync@latest install
+npx @ssheleg/agent-sync@latest install
 ```
 
 Check what you are actually running — the plugin and the skill must report the same

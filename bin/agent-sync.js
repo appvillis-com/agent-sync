@@ -43,11 +43,11 @@ function usage() {
   console.log(`
 ${C.bold('agent-sync')} — coordination for concurrent agents
 
-  npx ${NAME} install              install for Claude Code and other agents
-  npx ${NAME} install --claude-only  Claude Code plugin only
-  npx ${NAME} install --agent a,b    pick agents for the skills CLI
-  npx ${NAME} update               update every channel, then prune the shadow
-  npx ${NAME} --help
+  npx @ssheleg/${NAME} install              install for Claude Code and other agents
+  npx @ssheleg/${NAME} install --claude-only  Claude Code plugin only
+  npx @ssheleg/${NAME} install --agent a,b    pick agents for the skills CLI
+  npx @ssheleg/${NAME} update               update every channel, then prune the shadow
+  npx @ssheleg/${NAME} --help
 
 After installing, initialise the project — this is the step that asks where
 coordination state should live:
