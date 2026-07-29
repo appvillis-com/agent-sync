@@ -53,15 +53,21 @@ A fact that must survive is written to git first and referenced from the cloud. 
 about *who is doing what right now* lives in the cloud and expires. No cloud object is
 ever the only home of a durable fact, so your single-source-of-truth rules stay intact.
 
-Leases and id reservations are decided by **replaying one append-only log**. No
-supported knowledge base offers compare-and-swap, so the protocol never asks for one:
-append, read back, and let document order decide. Every agent replaying the same log
-reaches the same answer, without a lock server and without trusting anyone's clock.
+**The knowledge base never decides a lease.** It cannot: measured against a real
+instance, twelve concurrent appends to one document returned twelve successes and left
+three lines. Exclusion comes from something that genuinely has compare-and-swap — an
+atomic file create on one machine (`leaseBackend: "local"`), or a pushed git ref across
+machines (`leaseBackend: "git"`), where the remote's non-fast-forward rejection *is* the
+CAS. Id reservation still replays the log, which is safe because allocation is positional
+and every reader computes the same answer.
 
 ## What you get
 
 - **Leases with a TTL** — claim a task, renew automatically, steal an expired one.
-  Stealing is visible in the log, never silent.
+  Exclusive across machines with `leaseBackend: "git"`; the tool always states which
+  guarantee you have rather than implying the stronger one.
+- **The claim written through to the roadmap** — one row, one cell, refused on ambiguity,
+  and restored verbatim on release. Closing a task stays yours.
 - **Awareness, not just exclusion** — `status` lists every *other* run's live holdings,
   so an agent learns who holds a task and what they are touching, instead of only that
   it is taken.
@@ -81,11 +87,11 @@ reaches the same answer, without a lock server and without trusting anyone's clo
 | Requirement | Why | Check |
 |---|---|---|
 | **python3 ≥ 3.9** | the coordinator is one stdlib-only script — HTTP included, nothing to `pip install` | `python3 --version` |
-| **git** | the record plane, and the fallback lease store | `git --version` |
+| **git** | the record plane, and the cross-machine lease store | `git --version` |
 | **bash** | the four Claude Code hook scripts | `bash --version` |
 | **Node ≥ 18** | only for the `npx agent-sync` installer | `node --version` |
 | **[task-pipeline](https://github.com/ssheleg/task-pipeline)** | `agent-sync` supplies stages, it does not define them — without it `status` prints one line and stops | `npx sshlg-skills install` |
-| A knowledge-base instance *(optional)* | real leases shared across machines; without one the `fs` backend runs **degraded** | — |
+| A knowledge-base instance *(optional)* | the shared record, awareness and board; without one the `fs` backend keeps leases but loses cross-agent visibility | — |
 
 ## Install
 
