@@ -1,0 +1,22 @@
+name: Idea or improvement
+description: Suggest a change to agent-sync
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What collision, stall or lost work are you hitting? Describe the situation, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+  - type: textarea
+    id: races
+    attributes:
+      label: Concurrency implications
+      description: If two agents did this at the same time, what should happen? Anything touching leases or ids has to answer that.

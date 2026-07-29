@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.2 — 2026-07-29
+
+Open-source hygiene — the repo is public and ships in the `sshlg-skills` bundle,
+so the files a first-time contributor looks for now exist.
+
+### Added
+- `CODE_OF_CONDUCT.md`, issue forms and a pull-request template. The forms ask
+  the question that actually matters for this project: **how many agents were
+  running, against what checkout** — a coordination bug reported without the
+  concurrency shape is not reproducible.
+- The PR checklist requires a negative self-test with any new validator guard —
+  plant the defect, watch the check fail, then trust the green.
+- README points at the code of conduct and at the family bundle.
+
 ## 1.3.1 — 2026-07-29
 
 ### The git lease was invisible to everything that reads a lease — fixed

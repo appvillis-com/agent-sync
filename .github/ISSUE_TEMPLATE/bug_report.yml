@@ -1,0 +1,46 @@
+name: Bug report
+description: Coordination did not behave as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The commands or agent actions, in order. Paste the full output; redact anything private.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - Leases (claim, TTL, expiry, release)
+        - ID reservation
+        - Run journal
+        - Generated board
+        - Knowledge cloud backend
+        - Install / CLI
+    validations:
+      required: true
+  - type: input
+    id: agents
+    attributes:
+      label: How many agents were running
+      description: Concurrency is the whole point here — say how many sessions were active and against what checkout.
+      placeholder: "2 Claude Code sessions, same repo, same branch"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: agent-sync version
+    validations:
+      required: true

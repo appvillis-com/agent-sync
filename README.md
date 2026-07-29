@@ -389,8 +389,13 @@ agent loads on their own trigger rather than by default:
 | [`two-sources.md`](plugins/agent-sync/skills/agent-sync/references/two-sources.md) | before the first reconcile, or when deciding where a document belongs |
 | [`roadmap.md`](plugins/agent-sync/skills/agent-sync/references/roadmap.md) | configuring `claimTags`, taking or closing a task, or re-planning a board |
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Security
-reports: [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Everyone
+taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Security reports: [SECURITY.md](SECURITY.md).
+
+`agent-sync` also ships in the [sshlg-skills](https://github.com/ssheleg/sshlg-skills)
+bundle, which installs the whole family for Claude Code, Cursor, Codex and 70+
+other agents with one command.
 
 ## License
 
