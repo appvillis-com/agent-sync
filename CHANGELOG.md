@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.6.0 — 2026-07-29
+
+### Fixed
+- **The mirror was configured, documented and not implemented.** `mirror.enabled` and
+  `mirror.sources` existed in the schema, the config and the generated setup snapshot, and
+  nothing read them — a surface with nothing behind it, which is the failure mode that reads as
+  finished. `board --mirror` now renders each configured document into the plane, stamped with
+  the commit it was made from, refusing any page whose generated marker a human removed. A cap
+  on the number of files is reported rather than applied silently: a quiet truncation reads as
+  "everything is mirrored" when it is not.
+
 ## 0.5.0 — 2026-07-29
 
 ### Added

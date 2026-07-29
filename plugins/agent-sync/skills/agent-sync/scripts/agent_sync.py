@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -1114,6 +1114,46 @@ class Sync:
         ]
         return "\n".join(L) + "\n"
 
+    def mirror(self, limit: int = 120) -> list[str]:
+        """Render the configured git documents into the plane, one-way and stamped.
+
+        A rendering, never a source: each page carries the commit it was made from, and
+        the drift gate compares that stamp with HEAD. It is not a place to edit — a page
+        whose generated marker is gone is refused rather than overwritten.
+        """
+        cfg = self.cfg.get("mirror") or {}
+        if not cfg.get("enabled"):
+            return ["mirror: disabled in this project's config"]
+
+        files: list[Path] = []
+        for source in cfg.get("sources") or []:
+            q = self.root / source
+            if q.is_file():
+                files.append(q)
+            elif q.is_dir():
+                files += sorted(f for f in q.rglob("*.md") if f.is_file())
+        files = sorted(set(files))
+
+        out: list[str] = []
+        truncated = 0
+        if len(files) > limit:
+            truncated = len(files) - limit
+            files = files[:limit]
+
+        sha = head_sha()
+        for f in files:
+            rel = f.relative_to(self.root)
+            title = f"90 Mirror — {rel}"
+            body = (f"{GENERATED_MARKER} source={repo_name()}:{rel}@{sha} at={now_iso()} "
+                    "— a rendering of git, edit the source there -->\n\n" + f.read_text())
+            out.append(self.put_generated(title, body))
+
+        # A silent cap reads as "everything is mirrored" when it is not.
+        if truncated:
+            out.append(f"NOTE: {truncated} further file(s) not mirrored — raise the limit "
+                       "or narrow mirror.sources; they are absent, not up to date")
+        return out
+
     def setup_path(self) -> Path:
         configured = self.cfg.get("setupFile")
         if configured:
@@ -1430,10 +1470,12 @@ def cmd_guard(args: argparse.Namespace) -> int:
     return 2
 
 
-def cmd_board(_args: argparse.Namespace) -> int:
+def cmd_board(args: argparse.Namespace) -> int:
     s = Sync()
     results = [s.put_generated("10 Board", s.board()),
                s.put_generated(f"12 Repo — {repo_name()}", s.repo_page())]
+    if getattr(args, "mirror", False):
+        results += s.mirror()
     for r in results:
         print(r)
     # A refusal must be visible to a gate, not just to a reader.
@@ -1603,7 +1645,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("whoami", help="this run and its leases").set_defaults(fn=cmd_whoami)
     sub.add_parser("setup", help="write the generated snapshot of how this project is wired").set_defaults(fn=cmd_setup)
     sub.add_parser("adopt", help="inspect an existing project and propose a config (writes nothing)").set_defaults(fn=cmd_adopt)
-    sub.add_parser("board", help="regenerate the read-only board").set_defaults(fn=cmd_board)
+    bd = sub.add_parser("board", help="regenerate the read-only board")
+    bd.add_argument("--mirror", action="store_true",
+                    help="also render the configured git documents into the plane")
+    bd.set_defaults(fn=cmd_board)
 
     for name, fn, arg in (("acquire", cmd_acquire, "key"), ("release", cmd_release, "key")):
         q = sub.add_parser(name)

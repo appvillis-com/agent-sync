@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "0.5.0"
+  version: "0.6.0"
   author: appvillis-com
 ---
 
@@ -148,7 +148,7 @@ npx sshlg-skills install
 | `reconcile` | Intent (git) vs as-built (cloud). `--set-baseline` once per project |
 | `signal <DEP-ID> <state>` | Move a cross-repo dependency: `filed`/`accepted`/`delivered`/`closed`/`refused` |
 | `guard <path>` | Answer whether this run may write that path. Exit 0 = yes, 2 = no |
-| `board` | Regenerate the read-only board and the mirror from git |
+| `board` | Regenerate the shared board and this repo's page. `--mirror` also renders the configured git docs into the plane |
 | `whoami` | Print this run's id and its held leases |
 | `setup` | Write the generated snapshot of how **this** project is wired, for agents to read |
 | `adopt` | Inspect an existing project and **propose** a config — writes nothing |
