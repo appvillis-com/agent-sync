@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -813,10 +813,20 @@ class Sync:
         payload = json.dumps({"run": self.rid, "ts": now_iso(), "ttl": self.ttl,
                               "repo": repo_name(), "host": os.uname().nodename})
         empty_tree = git("hash-object", "-t", "tree", "/dev/null")
-        commit = subprocess.run(["git", "commit-tree", empty_tree], input=payload,
-                                capture_output=True, text=True).stdout.strip()
+        # A lease object is plumbing, not authorship, so it must not depend on the
+        # machine having a git identity. Without these `-c` flags `commit-tree`
+        # refuses wherever user.email is unset and cannot be auto-detected — CI
+        # runners, containers, a freshly provisioned box — and the lease backend
+        # silently becomes unusable on exactly the machines that need it most.
+        made = subprocess.run(
+            ["git", "-c", "user.name=agent-sync", "-c", "user.email=agent-sync@localhost",
+             "commit-tree", empty_tree],
+            input=payload, capture_output=True, text=True)
+        commit = made.stdout.strip()
         if not commit:
-            raise Fail("could not create the lease object — is this a git repository?")
+            detail = (made.stderr or "").strip().splitlines()
+            why = detail[-1] if detail else "no output from git commit-tree"
+            raise Fail(f"could not create the lease object — is this a git repository? ({why})")
 
         args = ["git", "push", remote, f"{commit}:{ref}"]
         if held_sha:                       # stealing an expired lease, and only that

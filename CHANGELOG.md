@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.3 — 2026-07-29
+
+### Fixed
+- **The git lease backend could not take a lease on any machine without a git
+  identity.** Acquiring writes a lease object with `git commit-tree`, which
+  refuses when `user.email` is unset and cannot be auto-detected — CI runners,
+  containers, a freshly provisioned box. So the backend that advertises
+  *exclusive across machines* failed on precisely the machines least likely to
+  have a personal git config, with `could not create the lease object` and no
+  further detail. The lease object is plumbing, not authorship: it now carries a
+  fixed `agent-sync <agent-sync@localhost>` identity passed inline, so it never
+  depends on ambient config.
+- The same failure now reports git's own last line instead of swallowing it. The
+  bug survived six red CI runs because the message named a possible cause and
+  showed no evidence.
+
 ## 1.3.2 — 2026-07-29
 
 Open-source hygiene — the repo is public and ships in the `sshlg-skills` bundle,
