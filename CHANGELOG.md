@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.3.3 — 2026-07-29
+
+### Fixed
+- **The enforcement hook ran in a different mode from the agent it was guarding.** A hook is
+  spawned with a bare environment and never inherits the operator's
+  `set -a && . ./.env.agent-sync`, so every hook silently fell back to the `fs` backend while
+  the agent's own commands used the cloud. Consequences, both invisible: the guard **denied
+  edits whose lease was properly held**, and it recorded runs as `ungated` while the agent had
+  been told `gated`. The gate was structurally broken in exactly the scenario it exists for.
+  The tool now loads `.env.agent-sync` itself — the path is deterministic, so correctness must
+  not depend on how the process was invoked. An already-set variable still wins.
+
 ## 0.3.2 — 2026-07-29
 
 ### Fixed

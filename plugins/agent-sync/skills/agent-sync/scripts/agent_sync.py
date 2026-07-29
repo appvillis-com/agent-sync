@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -108,6 +108,37 @@ class Fail(Exception):
 
 
 # --------------------------------------------------------------------------- config
+
+def load_env_file(root: Path) -> None:
+    """Read .env.agent-sync into the environment when it is not already there.
+
+    Load-bearing, and it was missing. A Claude Code hook is spawned with a bare
+    environment: it never sees the `set -a && . ./.env.agent-sync` the operator ran in
+    their own shell. So every hook silently fell back to the `fs` backend while the
+    agent's own commands used the cloud — the guard denied edits whose lease WAS held,
+    and recorded the run `ungated` while the agent had been told `gated`. Two views of
+    one project, and the enforcement half held the wrong one.
+
+    The file's location is deterministic, so the tool loads it rather than depending on
+    how it was invoked. An already-set variable always wins: explicit beats implicit,
+    and an operator overriding a value for one command must not be undone here.
+    """
+    path = root / ENV_FILE
+    if not path.exists():
+        return
+    try:
+        text = path.read_text()
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
 
 def load_config(root: Path) -> dict[str, Any]:
     path = root / CONFIG_PATH
@@ -487,6 +518,7 @@ class Sync:
     def __init__(self) -> None:
         self.root = project_root()
         os.chdir(self.root)
+        load_env_file(self.root)
         self.cfg = load_config(self.root)
         self.adapter = make_adapter(self.cfg, self.root)
         self.rid = run_id(self.root)
@@ -1045,6 +1077,7 @@ def ensure_gitignored(root: Path, entry: str) -> None:
 def cmd_status(_args: argparse.Namespace) -> int:
     root = project_root()
     os.chdir(root)
+    load_env_file(root)
     print(f"agent-sync {VERSION} — {repo_name()}@{head_sha()}")
 
     if not (root / CONFIG_PATH).exists():
@@ -1127,6 +1160,7 @@ def pipeline_installed() -> bool:
 
 
 def cmd_bootstrap(_args: argparse.Namespace) -> int:
+    load_env_file(project_root())
     ad = OutlineAdapter()
     if not ad.configured():
         raise Fail("set AGENT_SYNC_OUTLINE_URL and AGENT_SYNC_OUTLINE_TOKEN first")

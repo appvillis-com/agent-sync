@@ -1,6 +1,6 @@
 {
   "name": "agent-sync",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Let concurrent coding agents share one project without colliding — leases with TTL, race-free id reservation, a run journal and a generated board, over a pluggable knowledge cloud.",
   "bin": {
     "agent-sync": "bin/agent-sync.js"
