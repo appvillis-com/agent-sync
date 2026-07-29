@@ -22,15 +22,30 @@ One event per line, appended, never edited. Exactly this shape:
 Parsed by:
 
 ```
-^- `(?P<ts>[^`]+)`(?P<pairs>(?: `[a-z_]+=[^`]*`)+)$
+^[-*+] `(?P<ts>[^`]+)`(?P<pairs>(?: `[a-z_]+=[^`]*`)+)$
 ```
+
+**Emit `- `; accept `-`, `*` or `+`.** The bullet is deliberately liberal because a
+knowledge base normalises markdown on the way in — Outline rewrites `- ` to `* ` —
+so a parser anchored to the character you wrote rejects every line the server hands
+back. Observed live, and it presented as a lost race rather than a parse failure.
 
 Required on every line: `op`, `key`, `run`. `op` is one of
 `acquire` · `release` · `renew` · `base` · `reserve` · `release_id` · `signal` · `journal`.
 
-Unparseable lines are **skipped and reported**, never guessed at. When more than 2%
-of a log is unparseable the board gate fails — a log nobody can replay is not a
-coordination system, and a quiet skip would hide that.
+Unparseable lines are **counted and reported**, never guessed at. Anything
+entry-shaped (`^[-*+] \``) that fails the full pattern counts as unparseable; blank
+lines, prose and the generated marker are skipped without counting.
+
+**Do not put a narrower pre-filter in front of the pattern.** A `continue` that
+tests for the exact bullet you emitted skips malformed lines *before* they can be
+counted, so the ratio reads 0% while nothing parses — the guard and the counter both
+go quiet at once. This is not hypothetical; it is how the bug above stayed invisible.
+
+**An unreadable log is not a lost race.** When more than 2% of a log fails to parse,
+`acquire` **raises** instead of reporting `lost`, and the board gate fails. Reporting
+a lost race would name a holder who does not exist and send the caller looking for
+them.
 
 ## Acquiring
 

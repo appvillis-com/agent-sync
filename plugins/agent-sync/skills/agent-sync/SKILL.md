@@ -19,7 +19,7 @@ Two planes, and one rule between them:
 No cloud object is ever the only home of a durable fact. Everything below exists to
 keep that true while several agents write at once.
 
-## Three traps — read these before anything else
+## Four traps — read these before anything else
 
 **1. No backend offers compare-and-swap.** Outline's `documents.update` has
 `editMode: append|replace|prepend|patch` and **no `lastRevision`**. So a mutable
@@ -36,6 +36,16 @@ lease, because the other agent trusts it.
 skills CLI serves, there is no `PreToolUse` and nothing blocks a guarded edit. Run
 `guard` yourself before touching a guarded file and record the run as `ungated`.
 Do not describe the project as protected when it is not.
+
+**4. The store rewrites what you wrote — parse liberally, and never call an
+unreadable log a lost race.** Outline normalises markdown on the way in: a `- `
+bullet comes back as `* `. A parser anchored to the character you emitted then
+rejects every line the server returns, and the caller is told **`lost`** when the
+truth is *the log could not be read*. That is a lie pointing at a holder who does
+not exist. Emit `- `, accept `-`/`*`/`+`, count anything entry-shaped that fails to
+parse, and **fail loudly** once more than 2% is unparseable. Beware the silent
+pre-filter especially: a `continue` before the regex hides bad lines from the very
+counter meant to expose them.
 
 ## First command in any project: `init`
 

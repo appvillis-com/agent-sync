@@ -31,6 +31,22 @@ First release.
   token line empty for the operator to fill.
 - **Validator with a negative self-test**, plus CI.
 
+### Verified against a live instance
+Built and then exercised end to end against a real Outline deployment, which surfaced three
+defects the unit-level work had not:
+- **Markdown normalisation.** The store rewrites a `- ` bullet to `* `, so the log parser now
+  emits `- ` and accepts `-`/`*`/`+`. Anchoring to the character written rejected every line
+  the server returned.
+- **A silent pre-filter hid malformed lines from the counter meant to expose them**, so the
+  unparseable ratio read 0% while nothing parsed. Anything entry-shaped now reaches the pattern
+  and is counted.
+- **An unreadable log reported as a lost race.** `acquire` now raises above a 2% unparseable
+  ratio rather than naming a holder who does not exist.
+- HTTP error bodies are surfaced instead of dropped — a bare `400` cost a debugging round when
+  the response said `collectionId: Invalid UUID`.
+- The collection may be given as a UUID, a `urlId`, or the whole `name-urlId` slug from the
+  address bar, because that is what a person actually copies.
+
 ### Notes
 - Hooks exist only in Claude Code. Elsewhere the same checks run as a self-check and the
   run is recorded `ungated` — a documented limit, surfaced rather than hidden.

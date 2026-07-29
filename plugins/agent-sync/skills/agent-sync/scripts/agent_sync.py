@@ -44,8 +44,14 @@ LOGS = {
     "blockers": "60 Blockers",
 }
 
-LINE_RE = re.compile(r"^- `(?P<ts>[^`]+)`(?P<pairs>(?: `[a-z_]+=[^`]*`)+)$")
+# Write with "- ", read any bullet. A knowledge base normalises markdown on the way
+# in — Outline rewrites "- " to "* " — so a parser anchored to the character we wrote
+# rejects every line the server gave back, and the caller sees "lost" instead of
+# "unreadable". Be strict in what you emit, liberal in what you accept.
+LINE_RE = re.compile(r"^[-*+] `(?P<ts>[^`]+)`(?P<pairs>(?: `[a-z_]+=[^`]*`)+)$")
+CANDIDATE_RE = re.compile(r"^[-*+] `")
 PAIR_RE = re.compile(r"`([a-z_]+)=([^`]*)`")
+MAX_UNPARSEABLE = 0.02
 
 DEFAULT_TTL = 2700
 DEFAULT_RENEW = 300
@@ -173,6 +179,7 @@ class OutlineAdapter(Adapter):
         self.url = (os.environ.get("AGENT_SYNC_OUTLINE_URL") or "").rstrip("/")
         self.token = os.environ.get("AGENT_SYNC_OUTLINE_TOKEN") or ""
         self.collection = os.environ.get("AGENT_SYNC_OUTLINE_COLLECTION") or ""
+        self._collection_uuid = ""
         self._ids: dict[str, str] = {}
 
     def configured(self) -> bool:
@@ -197,15 +204,26 @@ class OutlineAdapter(Adapter):
                     raise Fail(f"outline {endpoint}: {data.get('message') or data.get('error')}")
                 return data.get("data") or {}
             except urllib.error.HTTPError as exc:
+                # The useful part of an Outline failure is in the body. Dropping it
+                # turns "collectionId: Invalid UUID" into a bare 400 and costs a
+                # debugging round — never swallow the reason.
+                detail = ""
+                try:
+                    payload_err = json.loads(exc.read().decode())
+                    detail = payload_err.get("message") or payload_err.get("error") or ""
+                except (ValueError, OSError):
+                    pass
                 if exc.code in (401, 403):
                     raise Fail(
-                        f"outline {endpoint}: {exc.code} — the token is rejected. "
+                        f"outline {endpoint}: {exc.code} — the token is rejected"
+                        f"{': ' + detail if detail else ''}. "
                         "A credential does not become valid on retry.") from exc
                 if exc.code == 429 and attempt < 4:
                     time.sleep(float(exc.headers.get("Retry-After") or delay))
                     delay *= 2
                     continue
-                raise Fail(f"outline {endpoint}: HTTP {exc.code}") from exc
+                raise Fail(f"outline {endpoint}: HTTP {exc.code}"
+                           f"{' — ' + detail if detail else ''}") from exc
             except urllib.error.URLError as exc:
                 if attempt < 2:
                     time.sleep(delay)
@@ -214,20 +232,48 @@ class OutlineAdapter(Adapter):
                 raise Fail(f"outline {endpoint}: cannot reach the instance ({exc.reason})") from exc
         raise Fail(f"outline {endpoint}: gave up after 5 attempts")
 
+    def resolve_collection(self) -> str:
+        """Accept a UUID, a urlId, or the whole `name-urlId` slug from the browser.
+
+        The API takes a UUID, and the value a person copies out of the address bar
+        is a slug. Rejecting that with 'Invalid UUID' is technically correct and
+        useless, so match it instead."""
+        if self._collection_uuid:
+            return self._collection_uuid
+        value = self.collection.strip()
+        if not value:
+            raise Fail("AGENT_SYNC_OUTLINE_COLLECTION is not set — run `bootstrap` to create "
+                       "the container, then put the id it prints into .env.agent-sync")
+        if re.fullmatch(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
+            self._collection_uuid = value
+            return value
+
+        rows = self._call("collections.list", {"limit": 100})
+        rows = rows if isinstance(rows, list) else []
+        tail = value.rsplit("-", 1)[-1]
+        for c in rows:
+            if value in (c.get("urlId"), c.get("name")) or (tail and tail == c.get("urlId")):
+                self._collection_uuid = c["id"]
+                print(f"note: resolved collection '{c.get('name')}' → {c['id']}\n"
+                      f"      put that UUID in AGENT_SYNC_OUTLINE_COLLECTION to skip this lookup",
+                      file=sys.stderr)
+                return str(c["id"])
+        names = ", ".join(repr(c.get("name")) for c in rows) or "none visible to this token"
+        raise Fail(f"no collection matches '{value}'. Available: {names}")
+
     def tree_ensure(self, path: str) -> str:
         if path in self._ids:
             return self._ids[path]
-        if not self.collection:
-            raise Fail("AGENT_SYNC_OUTLINE_COLLECTION is not set — run `init` to create it")
+        collection = self.resolve_collection()
         found = self._call("documents.search",
-                           {"query": path, "limit": 5, "collectionId": self.collection})
+                           {"query": path, "limit": 5, "collectionId": collection})
         for row in (found if isinstance(found, list) else []):
             doc = row.get("document") or {}
             if doc.get("title") == path:
                 self._ids[path] = doc["id"]
                 return doc["id"]
         doc = self._call("documents.create", {
-            "collectionId": self.collection, "title": path,
+            "collectionId": collection, "title": path,
             "text": f"{GENERATED_MARKER} container -->\n", "publish": True})
         self._ids[path] = doc["id"]
         return doc["id"]
@@ -323,7 +369,10 @@ def parse_log(text: str) -> tuple[list[dict[str, str]], int]:
     bad = 0
     for raw in text.splitlines():
         raw = raw.rstrip()
-        if not raw or not raw.startswith("- `"):
+        # Skip only what is plainly not an entry (blank lines, prose, the generated
+        # marker). Anything shaped like an entry must reach LINE_RE, or a silent
+        # pre-filter hides malformed lines from the very counter meant to expose them.
+        if not CANDIDATE_RE.match(raw):
             continue
         m = LINE_RE.match(raw)
         if not m:
@@ -415,12 +464,21 @@ class Sync:
         if not self.adapter.is_lease_authority:
             return self._fs_lease(key)
         oid = self.log_id("claims")
+        holder = None
         for attempt in range(3):
             self.adapter.log_append(oid, fmt_line(
                 "acquire", key, self.rid, ttl=self.ttl,
                 repo=repo_name(), sha=head_sha()))
             time.sleep(0.25 + random.random() * 0.15)
-            events, _ = parse_log(self.adapter.log_read(oid))
+            events, bad = parse_log(self.adapter.log_read(oid))
+            # A log we cannot replay is not a lost race. Reporting "lost" here would
+            # be a lie that sends the caller looking for a holder who does not exist.
+            total = len(events) + bad
+            if total and bad / total > MAX_UNPARSEABLE:
+                raise Fail(
+                    f"the claims log is {bad}/{total} unparseable — it cannot be replayed, "
+                    "so no holder can be determined. This is a read failure, not a lost "
+                    "race. Inspect the log before trusting any lease.")
             holder = resolve_holder(events, key, time.time())
             if holder == self.rid:
                 self._touch_renew()
