@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ and curl. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   author: appvillis-com
 ---
 
@@ -87,6 +87,21 @@ python3 "$SKILL_DIR/scripts/agent_sync.py" status
 
 Idempotent. Inspects, repairs what is missing, prints a status block, names exactly
 ONE next action.
+
+**Read the two awareness sections it prints — they are the point, not decoration.**
+
+- **Other runs working this project right now.** Who holds what, this minute. Do not
+  take those on, and do not "just look at" the files they cover. A lease you cannot
+  see makes you blocked; a lease you can see makes you coordinated.
+- **New since you last looked.** Cross-repo dependency moves that landed while you
+  were away. A dependency that moved may unblock what you planned — or invalidate it.
+  This list is watermarked per run, so it stays quiet until something actually
+  changes; when it speaks, it matters.
+
+An agent that skips this block will re-derive work someone else is doing and act on a
+dependency state that changed an hour ago.
+
+What else `status` decides for you:
 
 - No credentials in the environment → degraded mode, reported, and it continues.
   Missing credentials are not an error, they are a smaller mode.

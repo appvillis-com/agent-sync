@@ -366,8 +366,12 @@ def self_test() -> int:
         "description over cap": ("plugins/agent-sync/skills/agent-sync/SKILL.md",
                                  lambda t: t.replace("description: \"Use when",
                                                      "description: \"" + "x" * 1100 + " Use when")),
+        # Version-agnostic on purpose: a fixture pinned to a literal version stops
+        # breaking anything the first time the real version moves, and then the
+        # self-test reports "PASS" for a check that no longer runs.
         "version drift": ("package.json",
-                          lambda t: t.replace('"version": "0.1.0"', '"version": "9.9.9"')),
+                          lambda t: re.sub(r'"version":\s*"\d+\.\d+\.\d+"',
+                                           '"version": "9.9.9"', t, count=1)),
         # Built from parts on purpose: a literal instance address anywhere in a
         # published file is exactly what this rule forbids, including here.
         "leaked host": ("agent-sync.example.json",

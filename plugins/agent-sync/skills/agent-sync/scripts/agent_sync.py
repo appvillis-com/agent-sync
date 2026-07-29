@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -606,6 +606,42 @@ class Sync:
         self.adapter.log_append(self.log_id("signals"), fmt_line(
             "signal", dep, self.rid, state=state, repo=repo_name(), sha=head_sha()))
 
+    # -- awareness ---------------------------------------------------------
+
+    def _watermark(self, which: str) -> int:
+        p = self.root / STATE_DIR / "seen.json"
+        try:
+            return int(json.loads(p.read_text()).get(which, 0))
+        except (OSError, ValueError, AttributeError):
+            return 0
+
+    def _set_watermark(self, which: str, value: int) -> None:
+        p = self.root / STATE_DIR / "seen.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            data = {}
+        data[which] = value
+        p.write_text(json.dumps(data))
+
+    def activity(self, limit: int = 6, mark_read: bool = True) -> dict[str, Any]:
+        """What OTHER runs are doing, and what changed since this run last looked.
+
+        Coordination is not only mutual exclusion. An agent that cannot see the
+        others is merely blocked by them: it learns a task is taken and nothing
+        about who has it, what they are touching, or what landed while it was away.
+        """
+        others = {k: v for k, v in self.all_holders().items() if v != self.rid}
+
+        signals, _ = self.events("signals")
+        seen = self._watermark("signals")
+        fresh = signals[seen:] if len(signals) > seen else []
+        if mark_read:
+            self._set_watermark("signals", len(signals))
+
+        return {"others": others, "signals": signals[-limit:], "new_signals": fresh}
+
     # -- guard -------------------------------------------------------------
 
     def guard(self, path: str) -> tuple[bool, str]:
@@ -696,6 +732,14 @@ class Sync:
             "|---|---|---|",
         ]
         lines += rows or ["| — | — | none held |"]
+
+        sig, _ = self.events("signals")
+        if sig:
+            lines += ["", "## Recent cross-repo signals", "",
+                      "| Dependency | State | By | Repo |", "|---|---|---|---|"]
+            for ev in sig[-10:]:
+                lines.append(f"| `{ev['key']}` | {ev.get('state','?')} | {ev['run']} "
+                             f"| {ev.get('repo','—')} |")
 
         leaks = self._leaks(res_events)
         if leaks:
@@ -855,6 +899,31 @@ def cmd_status(_args: argparse.Namespace) -> int:
         print(f"\n✗ {exc}")
         return 1
     print(f"  leases held    : {', '.join(held) if held else 'none'}")
+
+    # Who else is in here, and what landed while this run was away. Without this a
+    # lease only tells an agent it is blocked, never who by or on what.
+    try:
+        act = s.activity()
+    except Fail as exc:
+        print(f"\n⚠ could not read the coordination plane: {exc}")
+        act = {"others": {}, "signals": [], "new_signals": []}
+
+    if act["others"]:
+        print("\n  Other runs working this project right now:")
+        for key, holder in sorted(act["others"].items()):
+            print(f"    · {holder} holds {key}")
+        print("    Do not take these on. If one looks abandoned, its lease expires on its own.")
+    else:
+        print("  other runs     : none holding anything")
+
+    if act["new_signals"]:
+        print(f"\n  New since you last looked ({len(act['new_signals'])}):")
+        for ev in act["new_signals"][-6:]:
+            print(f"    · {ev['key']} → {ev.get('state', '?')} "
+                  f"(by {ev['run']}, {ev.get('repo', 'unknown repo')})")
+        print("    A dependency that moved may unblock — or invalidate — what you were about to do.")
+    elif act["signals"]:
+        print(f"  signals        : {len(act['signals'])} recent, nothing new since you last looked")
 
     if not pipeline_installed():
         print("\n✗ task-pipeline is not installed. agent-sync binds to its stages and")

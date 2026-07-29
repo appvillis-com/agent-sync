@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 — 2026-07-29
+
+Coordination is not only mutual exclusion. An audit against the stated purpose — *agents
+see what each other are doing and pick up important changes in time* — found the tool
+enforced exclusion and delivered neither half of the awareness.
+
+### Fixed
+- **`status` shows what other runs are doing.** It reported only the caller's own leases,
+  so an agent learned a task was taken and nothing about who held it or what they were
+  touching. A lease you cannot see makes you blocked; a lease you can see makes you
+  coordinated.
+- **Cross-repo signals were write-only.** `signal` appended and nothing ever read the log,
+  so a producer was still never told a dependency had been filed against them — the exact
+  failure the feature exists to prevent. `status` now surfaces what landed since this run
+  last looked, watermarked per run so it stays quiet until something actually changes.
+- **The board renders recent signals** alongside live leases.
+
+### Notes
+- Verified with three concurrent runs across two repositories: an agent working inside a
+  submodule alone sees the leases and signals of agents in the parent repository, because
+  both read one coordination plane.
+
 ## 0.1.0 — 2026-07-29
 
 First release.
