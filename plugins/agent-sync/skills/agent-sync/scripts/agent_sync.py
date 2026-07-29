@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -1470,6 +1470,98 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return 1 if findings else 0
 
 
+REGISTER_HINTS = [
+    (r"\*\*Next free ID:\*\*\s*`([A-Z]{2,4})-(\d+)`", "explicit next-free-id line"),
+    (r"^#{2,4}\s+([A-Z]{2,4})-\d+\s+—", "id-prefixed headings"),
+]
+
+DOC_NAMES = ("DECISIONS", "OPEN_QUESTIONS", "ROADMAP", "WORKSTREAMS", "DEPENDENCIES",
+             "BUILD_ORDER", "INDEX", "ADR", "TESTING")
+
+
+def cmd_adopt(_args: argparse.Namespace) -> int:
+    """Inspect an existing project and PROPOSE a configuration.
+
+    Adoption is where a coordination tool most easily starts lying: guess a register
+    wrong and every later check is confidently about the wrong file. So this reads the
+    repository, shows what it found and what it could not decide, and prints a config
+    for a human to approve. It writes nothing.
+    """
+    root = project_root()
+    os.chdir(root)
+    print(f"agent-sync {VERSION} — adopting {repo_name()}\n")
+
+    docs_dir = "docs" if (root / "docs").is_dir() else ""
+    candidates: list[Path] = []
+    for pattern in ("*.md", "docs/*.md", "docs/**/*.md", "doc/*.md"):
+        candidates += [q for q in root.glob(pattern) if q.is_file()]
+    candidates = sorted({q for q in candidates if ".git" not in q.parts})[:400]
+
+    registers: dict[str, dict[str, str]] = {}
+    guarded: list[str] = []
+    notes: list[str] = []
+
+    for q in candidates:
+        rel = str(q.relative_to(root))
+        try:
+            text = q.read_text(errors="ignore")
+        except OSError:
+            continue
+        m = re.search(REGISTER_HINTS[0][0], text)
+        if m:
+            registers[m.group(1)] = {
+                "file": rel,
+                "nextFreeIdPattern": r"\*\*Next free ID:\*\* `" + m.group(1) + r"-(\d{" + str(len(m.group(2))) + r"})`",
+            }
+            guarded.append(rel)
+            continue
+        if any(n in q.stem.upper() for n in DOC_NAMES):
+            guarded.append(rel)
+            ids = set(re.findall(r"\b([A-Z]{2,4})-\d{3,4}\b", text))
+            if ids:
+                notes.append(f"{rel}: carries ids {', '.join(sorted(ids)[:4])} but no "
+                             "\"Next free ID\" line — allocation cannot be reserved safely "
+                             "until one exists, or a pattern is written by hand")
+
+    gates = []
+    for cmd, probe in (("bash scripts/check-docs.sh", "scripts/check-docs.sh"),
+                       ("python3 docs/ux/lint.py --strict", "docs/ux/lint.py"),
+                       ("npm test", "package.json"),
+                       ("pytest -q", "pyproject.toml")):
+        if (root / probe).exists():
+            gates.append(cmd)
+
+    sub = git("rev-parse", "--show-superproject-working-tree")
+    if sub:
+        notes.append(f"this is a submodule of {Path(sub).name} — declare ONLY this "
+                     "repository's registers; decisions belong to the parent")
+        registers = {}
+
+    print("Found:")
+    print(f"  documents scanned : {len(candidates)}")
+    print(f"  id registers      : {', '.join(registers) or 'none detected'}")
+    print(f"  registry files    : {len(guarded)}")
+    print(f"  gates             : {', '.join(gates) or 'none detected'}")
+    print(f"  setup snapshot    : {'docs/AGENT_SYNC.md' if docs_dir else 'AGENT_SYNC.md'}")
+    if notes:
+        print("\nNeeds a human decision:")
+        for n in notes:
+            print(f"  ! {n}")
+
+    proposed = default_config("outline")
+    proposed["idRegisters"] = registers
+    proposed["guardedFiles"] = sorted(set(guarded))
+    proposed["gates"] = gates
+    proposed["mirror"] = {"enabled": bool(docs_dir), "sources": [docs_dir] if docs_dir else []}
+
+    print("\nProposed .claude/agent-sync.json — review every line, then write it:\n")
+    print(json.dumps(proposed, indent=2))
+    print("\nNothing was written. Confirm the registers and guarded files with the operator")
+    print("first: a register pointed at the wrong file makes every later check confidently")
+    print("wrong. Then run `init`, paste this config, `reconcile --set-baseline`, and `setup`.")
+    return 0
+
+
 def cmd_setup(_args: argparse.Namespace) -> int:
     s = Sync()
     path = s.setup_path()
@@ -1510,6 +1602,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("bootstrap", help="create the cloud container").set_defaults(fn=cmd_bootstrap)
     sub.add_parser("whoami", help="this run and its leases").set_defaults(fn=cmd_whoami)
     sub.add_parser("setup", help="write the generated snapshot of how this project is wired").set_defaults(fn=cmd_setup)
+    sub.add_parser("adopt", help="inspect an existing project and propose a config (writes nothing)").set_defaults(fn=cmd_adopt)
     sub.add_parser("board", help="regenerate the read-only board").set_defaults(fn=cmd_board)
 
     for name, fn, arg in (("acquire", cmd_acquire, "key"), ("release", cmd_release, "key")):

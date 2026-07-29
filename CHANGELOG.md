@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 — 2026-07-29
+
+### Added
+- **`adopt`** — inspect an existing project and *propose* a configuration. Adoption is where a
+  coordination tool most easily starts lying: guess a register wrong and every later check is
+  confidently about the wrong file. So it reads the repository, prints what it found, prints the
+  decisions it **refuses to make for you** (a registry file carrying ids with no "next free id"
+  line cannot have allocation reserved safely), and writes nothing. In a submodule it proposes no
+  registers at all, because decisions belong to the parent repository.
+
 ## 0.4.0 — 2026-07-29
 
 Found by simulating three agents working three repositories at once, entered from one

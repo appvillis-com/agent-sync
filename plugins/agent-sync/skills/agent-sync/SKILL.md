@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "0.4.0"
+  version: "0.5.0"
   author: appvillis-com
 ---
 
@@ -47,7 +47,26 @@ parse, and **fail loudly** once more than 2% is unparseable. Beware the silent
 pre-filter especially: a `continue` before the regex hides bad lines from the very
 counter meant to expose them.
 
-## First command in any project: `init`
+## Bringing this into an existing project
+
+Run `adopt` before `init`. It reads the repository and prints what it found — id
+registers, registry files, gates — plus the decisions it **refuses to make for you**,
+then proposes a config. It writes nothing.
+
+```bash
+python3 "$SKILL_DIR/scripts/agent_sync.py" adopt
+```
+
+Confirm the registers and guarded files with the operator before writing them. A
+register pointed at the wrong file makes every later check confidently wrong, and a
+guarded list that misses a shared file leaves the one place collisions actually happen
+unprotected. In a submodule it declares no registers at all: decisions belong to the
+parent repository.
+
+Then: `init` → paste the approved config → `reconcile --set-baseline` → `setup` →
+commit the snapshot and link it from the project's agent instructions.
+
+## First command in a project: `init`
 
 **Never run anything else against an uninitialised project.** `init` is where the
 storage question gets asked and answered, once, and written down.
@@ -132,6 +151,7 @@ npx sshlg-skills install
 | `board` | Regenerate the read-only board and the mirror from git |
 | `whoami` | Print this run's id and its held leases |
 | `setup` | Write the generated snapshot of how **this** project is wired, for agents to read |
+| `adopt` | Inspect an existing project and **propose** a config — writes nothing |
 
 `$SKILL_DIR` is this skill's own directory. Every command reads
 `.claude/agent-sync.json` from the project root and needs no arguments beyond those
