@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/appvillis-com/agent-sync/main/agent-sync.schema.json",
+  "backend": "outline",
+  "leaseTtlSeconds": 2700,
+  "renewIntervalSeconds": 300,
+  "gated": true,
+  "idRegisters": {
+    "DEC": {
+      "file": "docs/DECISIONS.md",
+      "nextFreeIdPattern": "\\*\\*Next free ID:\\*\\* `DEC-(\\d{4})`"
+    },
+    "OQ": {
+      "file": "docs/OPEN_QUESTIONS.md",
+      "nextFreeIdPattern": "\\*\\*Next free ID:\\*\\* `OQ-(\\d{4})`"
+    }
+  },
+  "guardedFiles": [
+    "docs/DECISIONS.md",
+    "docs/OPEN_QUESTIONS.md",
+    "docs/ROADMAP.md"
+  ],
+  "claimTags": {
+    "docs/WORKSTREAMS.md": {
+      "open": "[OPEN]",
+      "held": "[{holder}]",
+      "done": "[done]"
+    }
+  },
+  "gates": [
+    "bash scripts/check-docs.sh"
+  ],
+  "mirror": {
+    "enabled": true,
+    "sources": ["docs/DECISIONS.md", "docs/ROADMAP.md"]
+  }
+}

@@ -1,0 +1,65 @@
+# Contributing
+
+## Verify a change — offline, no credentials needed
+
+```bash
+python3 test/validate.py
+```
+
+Exit 0 prints `PASS: agent-sync vX.Y.Z — all checks green`. That covers the Agent
+Skills spec floor, this repo's house rules, version sync, and the two rules that
+exist because breaking them ships a secret.
+
+Then prove the validator can still fail:
+
+```bash
+python3 test/validate.py --self-test
+```
+
+It copies the tree, injects five defects one at a time — an over-cap description, a
+version drift, a leaked host name, a token passed in `argv`, a stray `SKILL.md` —
+and requires each to be caught. A validator that cannot fail is decoration.
+
+Exercise the coordinator itself against a scratch repository:
+
+```bash
+S=plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py
+T=$(mktemp -d) && (cd "$T" && git init -q && git commit -q --allow-empty -m init)
+python3 "$S" status                      # expect exit 1 and one next action
+(cd "$T" && python3 "$OLDPWD/$S" init --backend fs)
+```
+
+Two-process contention, which is the whole point of the protocol:
+
+```bash
+AGENT_SYNC_RUN_ID=alpha python3 "$S" acquire T-1   # won
+AGENT_SYNC_RUN_ID=beta  python3 "$S" acquire T-1   # lost, names alpha
+```
+
+## House rules
+
+- **One skill, one job.** If a change needs a second skill, it probably needs a
+  clearer boundary instead.
+- **Contracts live inside the skill directory.** The skills CLI ships only that
+  folder; a sibling `references/` arrives broken on every agent outside Claude Code.
+- **Gotchas belong in `SKILL.md`, not only in `references/`.** An agent cannot know
+  to open a file about a trap it has not met.
+- **Every reference file states when to read it.** An unconditional pointer gets
+  loaded always or never.
+- **Degrade out loud.** Any path where the tool cannot do what it claims must say
+  so. Silent best-effort is the failure mode this project exists to prevent.
+- **No host address, no credential** in anything under `plugins/`, `bin/`, `test/`
+  or an example. Identity belongs in the environment.
+
+## Versioning
+
+Five places move together, and the validator enforces it:
+
+`.claude-plugin/marketplace.json` · `plugins/agent-sync/.claude-plugin/plugin.json` ·
+`package.json` · the top `CHANGELOG.md` entry · `metadata.version` in `SKILL.md`.
+
+## Commits
+
+Conventional commits. One logical change each. Note in the message when a change
+alters the log grammar or the replay rules — those are the only parts where a
+mistake corrupts state that already exists in someone's knowledge base.

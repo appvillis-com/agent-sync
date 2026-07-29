@@ -1,0 +1,47 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'   # the floor we claim to support, not the newest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: House validator
+        run: python3 test/validate.py
+
+      - name: Validator must still be able to fail
+        run: python3 test/validate.py --self-test
+
+      - name: Coordinator smoke test
+        run: |
+          S="$PWD/plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py"
+          T=$(mktemp -d); cd "$T"
+          git init -q && git -c user.email=ci@example.com -c user.name=ci commit -q --allow-empty -m init
+          python3 "$S" status && { echo "status must exit non-zero before init"; exit 1; } || true
+          python3 "$S" init --backend fs
+          test -f .claude/agent-sync.json
+          test -f .env.agent-sync
+          grep -q '.env.agent-sync' .gitignore
+          [ "$(stat -c '%a' .env.agent-sync)" = "600" ] || { echo "env file must be 600"; exit 1; }
+          AGENT_SYNC_RUN_ID=alpha python3 "$S" acquire T-1
+          AGENT_SYNC_RUN_ID=beta  python3 "$S" acquire T-1 && { echo "contention not detected"; exit 1; } || true
+          AGENT_SYNC_RUN_ID=alpha python3 "$S" release T-1
+
+      - name: No SKILL.md outside plugins/*/skills/*/
+        run: |
+          found=$(find . -name SKILL.md -not -path './.git/*' \
+            -not -regex './plugins/[^/]*/skills/[^/]*/SKILL.md' | head)
+          [ -z "$found" ] || { echo "stray SKILL.md: $found"; exit 1; }

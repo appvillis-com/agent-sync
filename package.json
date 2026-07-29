@@ -1,0 +1,38 @@
+{
+  "name": "agent-sync",
+  "version": "0.1.0",
+  "description": "Let concurrent coding agents share one project without colliding — leases with TTL, race-free id reservation, a run journal and a generated board, over a pluggable knowledge cloud.",
+  "bin": {
+    "agent-sync": "bin/agent-sync.js"
+  },
+  "files": [
+    "bin/",
+    "plugins/",
+    "agent-sync.schema.json",
+    "agent-sync.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude-code",
+    "agent-skills",
+    "multi-agent",
+    "coordination",
+    "lease",
+    "knowledge-base",
+    "task-pipeline"
+  ],
+  "homepage": "https://github.com/appvillis-com/agent-sync",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/appvillis-com/agent-sync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/appvillis-com/agent-sync/issues"
+  },
+  "author": "appvillis-com",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

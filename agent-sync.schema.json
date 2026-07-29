@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/appvillis-com/agent-sync/main/agent-sync.schema.json",
+  "title": "agent-sync project configuration",
+  "description": "Shape only. Identity (instance URL, token, container id) lives in .env.agent-sync and is never committed.",
+  "type": "object",
+  "required": ["backend"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "backend": {
+      "type": "string",
+      "enum": ["outline", "fs"],
+      "description": "Which adapter holds coordination state. 'fs' is degraded: not the lease authority across machines."
+    },
+    "leaseTtlSeconds": { "type": "integer", "minimum": 60, "default": 2700 },
+    "renewIntervalSeconds": { "type": "integer", "minimum": 30, "default": 300 },
+    "gated": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether runs may be reported as enforced. Effective only when the backend is the lease authority."
+    },
+    "idRegisters": {
+      "type": "object",
+      "description": "Registers whose next free id must be reserved before it is written to git.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["file", "nextFreeIdPattern"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string", "description": "Repo-relative path to the register file." },
+          "nextFreeIdPattern": {
+            "type": "string",
+            "description": "Regex with one capture group holding the next free number."
+          }
+        }
+      }
+    },
+    "guardedFiles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Glob patterns that require a live lease before being written. A submodule lists only its own registers; cross-repository files belong to the parent repository."
+    },
+    "claimTags": {
+      "type": "object",
+      "description": "How a durable claim is written through to git for each file. {holder} is substituted.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": { "type": "string" }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Shell commands run at the pipeline's lint stage; each result is journaled."
+    },
+    "mirror": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "sources": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Files or directories rendered one-way into the knowledge store, stamped with the source commit."
+        }
+      }
+    }
+  }
+}
