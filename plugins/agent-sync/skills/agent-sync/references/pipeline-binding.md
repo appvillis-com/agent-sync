@@ -64,13 +64,17 @@ user-facing work) and `make-skill`, and it prunes the duplicate plain-copy shado
 
 ## Gate expressions
 
-Each `check` above is verified by the coordinator, not by prose:
+Each `check` above is verified by the coordinator, not by prose — and since 1.3.0 the repository
+half of that verification is a command rather than a promise: **`agent_sync.py finish`** runs the
+pointer, cleanliness, pushed-ness and lease checks, and `finish --gates` adds the project's own
+declared gates. Until then this table described work nothing performed.
 
 | Check | How it is decided |
 |---|---|
 | lease held | replay the log; holder == this run |
 | every id reserved | every `DEC-`/`OQ-`/`DEP-`-shaped token new in the diff has a `reserve` line in this run |
 | no two parallel tasks write one file | intersect the file lists journaled at stage 4 |
-| submodule pointers current | `git submodule status` reports no `+` prefix |
+| submodule pointers current | `git submodule status` reports no `+` prefix — `finish` |
+| every repository pushed | no commits ahead of upstream anywhere, parent included — `finish` |
 | board regenerated, no drift | each mirror stamp equals `git rev-parse HEAD` for its source |
 | every lease released | replay the log; this run holds nothing |

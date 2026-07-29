@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.2.4"
+VERSION = "1.3.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -208,46 +208,103 @@ def load_config(root: Path) -> dict[str, Any]:
         raise Fail(f".claude/agent-sync.json is not valid JSON: {exc}") from exc
 
 
-def run_id(root: Path) -> str:
-    """One identity per session, whichever way the tool is invoked.
+def _session_key() -> tuple[str, str]:
+    """Who is asking — and how confidently.
 
-    This is load-bearing. A hook runs with CLAUDE_SESSION_ID in its environment and a
-    plain shell command usually does not, so deriving the id from that variable gave
-    one session two identities: the agent acquired a lease as one and was then denied
-    by its own guard as the other. The gate blocked the lease holder.
+    Returns `(key, how)`. `how` is reported to the user, because the three answers are not
+    equally strong and an identity nobody can question is how two agents end up as one.
 
-    The marker file is therefore authoritative for the checkout, with the session name
-    recorded beside it. A genuinely different session rotates it; a run that merely
-    *learns* its session name adopts it instead of rotating — otherwise the first shell
-    command in a fresh checkout would fork the identity all over again.
+    The hard case is real and was found in production: **two Claude sessions in the same
+    checkout.** A hook runs with `CLAUDE_SESSION_ID` in its environment; a plain shell command
+    does not. With a single marker file per checkout, the second session adopts whatever the
+    first stamped — so both acquire, release and are guarded as one run. The lease then fails to
+    separate exactly the case it exists for, silently, and one agent can release the other's
+    lease mid-work.
+
+    The process tree is what a plain shell still has. Every Claude session runs under its own
+    `claude` process, so the nearest such ancestor identifies the session even when the
+    environment does not. A pid can be recycled, so it is paired with that process's start time.
     """
     override = os.environ.get("AGENT_SYNC_RUN_ID")
     if override:
-        return "r-" + re.sub(r"[^a-z0-9]", "", override.lower())[:12]
+        return "env:" + override, "AGENT_SYNC_RUN_ID"
 
     session = os.environ.get("CLAUDE_SESSION_ID") or ""
-    marker = root / STATE_DIR / "run-id"
+    if session:
+        return "session:" + session, "CLAUDE_SESSION_ID"
 
-    stored: dict[str, str] = {}
+    # No session id in this environment — a plain shell command has none. What it does have is
+    # an ancestor process that the SessionStart hook ran under, and that hook DID have the id.
+    # So the hook stamps `<state>/sessions/<its own parent pid>` with the session, and this walk
+    # looks for an ancestor that appears there. That is exact: no command-line parsing, which was
+    # tried and failed — the throwaway shell this very command runs in carries claude paths in
+    # its argv and matched every heuristic aimed at the CLI.
+    try:
+        root = project_root()
+        sessions = root / STATE_DIR / "sessions"
+        pid = os.getpid()
+        for _ in range(10):
+            marker = sessions / str(pid)
+            if marker.exists():
+                return "session:" + marker.read_text().strip(), "the session that started this shell"
+            out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                                 capture_output=True, text=True, timeout=5)
+            ppid = out.stdout.strip()
+            if not ppid or ppid in ("0", "1", str(pid)):
+                break
+            pid = int(ppid)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+    return "", "nothing — this identity is shared with any other session in this checkout"
+
+
+def run_id(root: Path) -> str:
+    """One identity per session, whichever way the tool is invoked.
+
+    Load-bearing in both directions. Deriving the id from `CLAUDE_SESSION_ID` alone gave one
+    session two identities — the agent acquired a lease as one and was denied by its own guard as
+    the other. Keeping a single id per checkout gave two sessions one identity, which is worse:
+    the guard let each of them write the other's guarded files and `release` took a lease its run
+    never acquired.
+
+    So the marker is a **map**, keyed by whatever `_session_key()` could establish. A key that
+    cannot be established falls back to the shared entry — the old behaviour, kept because it is
+    better than minting a fresh identity on every shell command, and reported as weak rather than
+    presented as separation.
+    """
+    key, _how = _session_key()
+    if key.startswith("env:"):
+        return "r-" + re.sub(r"[^a-z0-9]", "", key[4:].lower())[:12]
+
+    marker = root / STATE_DIR / "run-id"
+    data: dict[str, Any] = {}
     if marker.exists():
         raw = marker.read_text().strip()
         try:
-            stored = json.loads(raw)
+            parsed = json.loads(raw)
         except json.JSONDecodeError:
-            stored = {"run": raw, "session": ""}   # legacy plain-text marker
+            parsed = {"run": raw, "session": ""}
+        if isinstance(parsed, dict) and "runs" in parsed:
+            data = parsed
+        elif isinstance(parsed, dict) and parsed.get("run"):
+            # migrate the single-value marker: it belonged to whichever session stamped it
+            legacy_key = ("session:" + parsed["session"]) if parsed.get("session") else "shared"
+            data = {"runs": {legacy_key: {"run": parsed["run"], "seen": now_iso()}}}
+    data.setdefault("runs", {})
 
-    if stored.get("run"):
-        known = stored.get("session", "")
-        if not session or known == session:
-            return stored["run"]
-        if not known:
-            marker.write_text(json.dumps({"run": stored["run"], "session": session}))
-            return stored["run"]
+    entry = data["runs"].get(key or "shared")
+    if entry and entry.get("run"):
+        entry["seen"] = now_iso()
+        rid = entry["run"]
+    else:
+        session = os.environ.get("CLAUDE_SESSION_ID") or ""
+        rid = ("r-" + re.sub(r"[^a-z0-9]", "", session.lower())[:12]) if session else \
+              "r-%06x%s" % (random.getrandbits(24), format(int(time.time()) & 0xFFF, "03x"))
+        data["runs"][key or "shared"] = {"run": rid, "seen": now_iso()}
 
-    rid = ("r-" + re.sub(r"[^a-z0-9]", "", session.lower())[:12]) if session else \
-          "r-%06x%s" % (random.getrandbits(24), format(int(time.time()) & 0xFFF, "03x"))
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"run": rid, "session": session}))
+    marker.write_text(json.dumps(data, indent=1))
     return rid
 
 
@@ -2175,6 +2232,124 @@ def cmd_scaffold(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repo_state(path: Path, label: str, ignore: str) -> list[str]:
+    """Is this repository clean, and is its work anywhere but here?
+
+    Both halves matter and only one of them is obvious. Uncommitted work is visible to whoever
+    is sitting in front of it; work committed and never pushed is invisible to everyone else
+    while looking finished to its author — the roadmap says done, the test suite is green, and
+    nobody else can fetch a line of it.
+    """
+    problems: list[str] = []
+    porcelain = git("status", "--porcelain", cwd=path)
+    dirty = [ln for ln in porcelain.split("\n")
+             if ln.strip() and not re.search(ignore, ln.split()[-1] if ln.split() else "")]
+    if dirty:
+        problems.append(f"{label} has uncommitted work: " + ", ".join(d.split()[-1] for d in dirty[:6]))
+    upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", cwd=path)
+    branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=path)
+    if upstream:
+        ahead = git("rev-list", "--count", f"{upstream}..HEAD", cwd=path) or "0"
+        if ahead != "0":
+            problems.append(f"{label} is {ahead} commit(s) ahead of {upstream} — pushed nowhere")
+    elif branch == "HEAD":
+        # A submodule sits at a detached pointer by design; what matters is that the commit exists
+        # somewhere others can fetch from.
+        if not git("branch", "-r", "--contains", "HEAD", cwd=path):
+            problems.append(f"{label} is at a commit on no remote branch — nobody else can fetch it")
+    else:
+        problems.append(f"{label} ({branch}) tracks no remote — its work cannot be seen by anyone")
+    return problems
+
+
+def cmd_finish(args: argparse.Namespace) -> int:
+    """The gate expressions this plugin's pipeline binding declares, actually executed.
+
+    `check` answers *is this project wired correctly*. This answers *is the work finished*, and
+    they are different questions with different failure modes. The one it exists for is silent by
+    construction: a project of git submodules records each submodule's commit as a pointer in its
+    parent, and moving the submodule does not move the pointer. So the submodule is pushed, its CI
+    is green, its roadmap says `done` — and anyone who clones the parent gets the commit before the
+    work. Nothing in either repository looks wrong on its own; the disagreement only exists between
+    them, which is why nothing had been checking it.
+    """
+    s = Sync()
+    root = project_root()
+    ok: list[str] = []
+    problems: list[str] = []
+    ignore = r"\.agent-sync/"
+
+    print(f"run {s.rid} · {'gated' if s.gated else 'ungated'}\n")
+
+    # 1. the parent, then every submodule: clean, pushed, and pointed at
+    p = _repo_state(root, root.name, ignore)
+    problems.extend(p)
+    if not p:
+        ok.append(f"{root.name} clean and pushed")
+
+    for line in (git("submodule", "status") or "").split("\n"):
+        if not line.strip():
+            continue
+        prefix, rest = line[0], line[1:].split()
+        sub = rest[1] if len(rest) > 1 else "?"
+        if prefix == "+":
+            recorded = (git("ls-tree", "HEAD", sub) or "").split()
+            problems.append(
+                f"{sub} — the parent points at {recorded[2][:8] if len(recorded) > 2 else '?'}, "
+                f"the submodule is at {rest[0][:8]}. The bump commit is missing")
+        elif prefix == "-":
+            problems.append(f"{sub} is not checked out — a gate run here skips everything it owns")
+        elif prefix == "U":
+            problems.append(f"{sub} has merge conflicts")
+        else:
+            ok.append(f"{sub} pointer current")
+        subp = root / sub
+        if subp.is_dir():
+            sp = _repo_state(subp, sub, ignore)
+            problems.extend(sp)
+            if not sp and prefix == " ":
+                ok.append(f"{sub} clean and pushed")
+
+    # 2. leases. A run that ends holding one blocks the next agent for the whole TTL, and the
+    #    holder is a run id nobody can ask about once its session is gone.
+    held = s.held()
+    if held:
+        problems.append("this run still holds " + ", ".join(held) + " — release before you finish")
+    else:
+        ok.append("no lease left held")
+
+    # 3. the declared gates, on request. They are the project's own commands and can be slow, so
+    #    running them is opt-in — but a `finish` that never ran them is a claim, not a check.
+    if args.gates:
+        for cmd in s.cfg.get("gates", []):
+            try:
+                r = subprocess.run(cmd, shell=True, cwd=str(root), capture_output=True,
+                                   text=True, timeout=600)
+            except (OSError, subprocess.SubprocessError) as exc:
+                problems.append(f"gate `{cmd}` could not run: {exc}")
+                continue
+            if r.returncode == 0:
+                ok.append(f"gate `{cmd}`")
+            else:
+                tail = [ln for ln in (r.stdout + r.stderr).split("\n") if ln.strip()][-3:]
+                problems.append(f"gate `{cmd}` failed: " + " / ".join(tail))
+
+    for line in ok:
+        print(f"  \u2713 {line}")
+    for line in problems:
+        print(f"  \u2717 {line}")
+    print()
+    if problems:
+        print(f"{len(problems)} problem(s) — this work is not finished. The usual one is a "
+              "submodule commit with no parent bump:")
+        print('    git -C <submodule> push && git add <submodule> && '
+              'git commit -m "chore: bump <name> submodule — <why>"')
+        return 1
+    print(f"finished cleanly ({len(ok)} checks passed) — every repository is clean, pushed, "
+          "and pointed at.")
+    return 0
+
+
 def cmd_check(_args: argparse.Namespace) -> int:
     """Validate the whole setup, end to end, and refuse to call a broken one healthy.
 
@@ -2418,6 +2593,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("setup", help="write the generated snapshot of how this project is wired").set_defaults(fn=cmd_setup)
     sub.add_parser("adopt", help="inspect an existing project and propose a config (writes nothing)").set_defaults(fn=cmd_adopt)
     sub.add_parser("check", help="validate the whole setup; non-zero if it is not healthy").set_defaults(fn=cmd_check)
+    fi = sub.add_parser("finish", help="is the work finished — every repo clean, pushed and pointed at; no lease held")
+    fi.add_argument("--gates", action="store_true", help="also run the project's declared gate commands")
+    fi.set_defaults(fn=cmd_finish)
     sc = sub.add_parser("scaffold", help="create the missing documentation architecture (never overwrites)")
     sc.add_argument("--docs-dir", action="store_true", help="put the register under docs/ even if it does not exist yet")
     sc.set_defaults(fn=cmd_scaffold)

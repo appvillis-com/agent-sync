@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.2.4"
+  version: "1.3.0"
   author: appvillis-com
 ---
 
@@ -191,10 +191,32 @@ npx sshlg-skills install
 | `adopt` | Inspect an existing project and **propose** a config — writes nothing |
 | `scaffold` | Create the missing documentation architecture. Never overwrites |
 | `check` | Validate the whole setup end to end. Non-zero when it is not healthy |
+| `finish [--gates]` | Is the **work** finished — every repository clean, pushed and pointed at, no lease left held. `check` answers whether the project is wired correctly; this answers whether you are done |
 
 `$SKILL_DIR` is this skill's own directory. Every command reads
 `.claude/agent-sync.json` from the project root and needs no arguments beyond those
 listed.
+
+## One identity per session, and how it is decided
+
+A lease is only a lease if two agents get two identities. Ordering matters here and both ends have
+bitten: deriving the id from `CLAUDE_SESSION_ID` alone gave **one session two identities** — it
+acquired as one and was denied by its own guard as the other — and keeping one id per checkout gave
+**two sessions one identity**, which is worse. The second is silent: both sessions acquire, both are
+guarded, and `release` takes a lease the caller never had.
+
+The order is: `AGENT_SYNC_RUN_ID` · `CLAUDE_SESSION_ID` · **the session that started this shell** ·
+shared.
+
+The third is the one that matters, because a plain shell command has no session id and a hook does.
+So `SessionStart` stamps `.agent-sync/sessions/<the CLI's pid>` with the session it knows, and a
+later command finds itself by walking its own process ancestry to a pid that appears there. It is
+exact, and it deliberately does **not** parse command lines: the throwaway shell every tool call
+runs in carries claude paths in its own argv, so every heuristic aimed at the CLI binary matched it
+instead. Stamps are removed when their process is gone.
+
+When none of the four can be established the run says so — *"this identity is shared with any other
+session in this checkout"* — rather than presenting a shared entry as separation.
 
 ## Claiming — the shape that matters
 

@@ -3,6 +3,44 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.0 — 2026-07-29
+
+### Two agents in one checkout were one identity — fixed
+
+Found in production, in the case this plugin exists for: **two Claude sessions working the same
+checkout shared a single run id**, so the lease could not separate them. A hook runs with
+`CLAUDE_SESSION_ID` in its environment and a plain shell command does not, and the marker file held
+one id per checkout — so the second session adopted whatever the first had stamped. Both acquired
+as one run, both were guarded as one run, and `release` would take a lease the caller never
+acquired. The failure is silent: `whoami` reports a lease, and it is somebody else's.
+
+- the marker is now a **map** keyed by session, and migrates the old single-value file into it
+- a plain shell has no session id, so the `SessionStart` hook stamps
+  `.agent-sync/sessions/<CLI pid>` with the session it *does* know, and later commands find
+  themselves by walking their own ancestry. Exact, and no command-line parsing: the throwaway
+  shell every tool call runs in carries claude paths in its argv and defeated every heuristic
+  aimed at the CLI binary
+- stale stamps are removed when their process is gone, so the directory cannot grow
+- where identity still cannot be established, the run says so rather than presenting a shared
+  entry as separation
+
+### `finish` — the gate expressions this plugin declares, executed
+
+`references/pipeline-binding.md` has always listed *submodule pointers current* and *every lease
+released* as gate expressions "verified by the coordinator, not by prose". Nothing ran them:
+`check` validates the **setup** — config, registers, credentials, snapshot — and never looks at the
+state of the repositories.
+
+`finish` answers the other question, *is the work finished*:
+
+- every submodule's recorded gitlink equals its HEAD. This is the failure it exists for and it is
+  invisible from either side alone: the submodule is pushed, its CI is green, its roadmap says
+  done, and a clone of the parent has the commit before the work
+- every repository — parent included — is clean and pushed, with a detached submodule accepted
+  only when its commit exists on some remote branch
+- no lease left held, because a run that ends holding one blocks the next agent for the whole TTL
+- `--gates` also runs the project's own declared gate commands
+
 ## 1.2.4 — 2026-07-29
 
 ### Fixed — the tool misreported its own version, and disagreed with itself about the lease
