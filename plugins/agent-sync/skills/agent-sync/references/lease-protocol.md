@@ -3,13 +3,13 @@
 **Read this when** changing acquisition, expiry, stealing, or id allocation — or
 when two agents disagree about who holds something.
 
-No planned backend offers compare-and-swap. So the protocol never asks one: both
-leases and id reservations are decided by **replaying one append-only log**, and
+Two different mechanisms, and confusing them is how this went wrong twice:
 
-> **the order of lines in the document is authoritative. Timestamps are used only
-> to expire leases, never to order them.**
+> **A lease is decided by an atomic operation** — `O_EXCL` on one filesystem, or a pushed
+> git ref across machines. **An id reservation is decided by replaying the log**, where
+> allocation is positional and every reader computes the same answer.
 
-Clocks differ between agents. Document order does not.
+The log never decides a lease. It records one, so other agents can see it.
 
 ## Line grammar
 
@@ -62,25 +62,27 @@ its failure reported, not raised.
 
 ### Why not the knowledge base
 
-Two earlier designs failed, and the measurements are worth keeping:
+Two earlier designs were measured and rejected. **One shared append-only document** loses
+writes: twelve concurrent appends, twelve reported successes, three lines present — so a
+lease decided on it can be held by two runs, each with proof. **One document per writer**
+loses nothing (12/12) but cannot decide: without compare-and-swap nothing knows whether a
+contender is still writing, and eight parallel processes each read only their own shard —
+**eight winners for one key**. A longer settle window reached five, never one.
 
-- **One shared append-only document.** Twelve concurrent appends returned twelve
-  successes and left three lines. `editMode: append` reads, appends and writes back, so
-  simultaneous writers clobber each other — and each is told it succeeded. A lease
-  decided on that can be held by two runs, each with proof.
-- **One document per writer.** Loss goes to zero (12/12 land). But the decision needs
-  to know whether a contender is *still writing*, and without compare-and-swap nothing
-  answers that. Eight parallel processes each read only their own shard: **eight winners
-  for one key.** A longer settle window took it to five. It cannot reach one.
+`O_EXCL` answers what the store cannot: twelve processes, one winner, eleven losers naming
+the same holder. Full history in `CHANGELOG.md` (1.0.0).
 
-`O_EXCL` answers the question the store cannot: twelve processes, one winner, eleven
-losers naming the same holder.
+### Cross-machine: `leaseBackend: "git"`
 
-### The limit, stated
+A lock file is exclusive between processes on **one filesystem**; two machines have two.
+For cross-machine exclusion the lease is a commit pushed to
+`refs/agent-sync/leases/<key>`, and the remote's non-fast-forward rejection **is** a
+compare-and-swap — verified against a hosted remote, then proven with eight parallel
+processes: one winner, seven losers naming it. Expired leases are stolen with
+`--force-with-lease` against the exact object seen, so a steal cannot clobber a holder who
+renewed in between.
 
-A lock file is exclusive between processes on **one filesystem**. Two machines have two
-filesystems and therefore two locks, and the plane's record is then advisory. The tool
-reports which it is; it never implies the stronger one.
+The tool reports which guarantee is in force; it never implies the stronger one.
 
 ## Expiry and stealing
 
@@ -133,10 +135,11 @@ number, and silently handing it out again would produce two documents with one i
 | Who holds this task **right now** | the lease log | ephemeral, TTL |
 | Who **owns** this task | the git claim tag (`[name]`, `todo (claimed: <role>)`) | durable |
 
-The **run** writes the git tag through — the agent, not the tool. A process that
-rewrites a shared registry on its own is the exact mechanism that clobbers another
-agent's work, and it would do it from a hook, unattended. So the tool **verifies**:
-`status` reports where a held lease and the git tag disagree, and says plainly when the
-configured mapping cannot be checked at all rather than passing silently. Do not add a
-third place that records ownership — a project with two claim vocabularies has, in
-practice, none.
+`acquire` writes the git tag through and `release` restores exactly what was there. The
+objection that once demoted this to a check — an unattended process rewriting a shared
+registry is the collision a lease exists to prevent — is engineered out rather than
+accepted: one row, one cell, refused on ambiguity, atomic, and reversible from stored
+state. See `roadmap.md`.
+
+Do not add a third place that records ownership — a project with two claim vocabularies
+has, in practice, none.

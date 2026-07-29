@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.2.0"
+  version: "1.2.1"
   author: appvillis-com
 ---
 
@@ -21,42 +21,32 @@ keep that true while several agents write at once.
 
 ## Four traps — read these before anything else
 
-**1. The knowledge base cannot arbitrate. Exclusion comes from an atomic file
-create.** Measured, not assumed: twelve concurrent appends to one Outline document
-returned twelve successes and left **three** lines — `editMode: append` reads, appends
-and writes back, so simultaneous writers clobber each other and every one is told it
-succeeded. Sharding per writer stops the loss, and then breaks the *decision*: with no
-compare-and-swap there is no way to know a contender is still writing, so eight
-processes each read only their own shard and **eight of them won one key**. No settle
-window closes that. `O_EXCL` does: one winner out of twelve, every loser naming the
-same holder. The plane still carries the record — it just never decides.
+**1. The knowledge base never decides a lease.** It cannot: twelve concurrent appends to
+one Outline document returned twelve successes and left **three** lines. Exclusion comes
+from something with real compare-and-swap. The plane carries the record and nothing else.
+Full measurements in `references/lease-protocol.md`.
 
 **2. Know which lease you have, and say so.** `leaseBackend: "local"` is an atomic file
 create — exclusive between processes on one filesystem, **advisory across machines**.
 `leaseBackend: "git"` pushes a ref, and the remote's non-fast-forward rejection **is** a
-compare-and-swap — exclusive across machines, verified against a hosted remote. `acquire`
-prints which one you have. A pretended lease is worse than no lease: the other agent stops
-checking.
+compare-and-swap — exclusive across machines. `acquire` prints which. A pretended lease is
+worse than no lease: the other agent stops checking.
 
 **`acquire` also writes the claim through to the roadmap**, and `release` restores exactly
 what was there — one row, one cell, refused on ambiguity, `git diff` empty after a
 round-trip. **Read `references/roadmap.md`** before configuring `claimTags` or closing a
 task; closing is a statement about the work and stays yours.
 
-**3. Hooks exist only in Claude Code.** On Cursor, Codex and every other agent the
-skills CLI serves, there is no `PreToolUse` and nothing blocks a guarded edit. Run
-`guard` yourself before touching a guarded file and record the run as `ungated`.
-Do not describe the project as protected when it is not.
+**3. Hooks exist only in Claude Code.** Elsewhere nothing blocks a guarded edit: run
+`guard` yourself and record the run as `ungated`. Do not describe a project as protected
+when it is not.
 
-**4. The store rewrites what you wrote — parse liberally, and never call an
-unreadable log a lost race.** Outline normalises markdown on the way in: a `- `
-bullet comes back as `* `. A parser anchored to the character you emitted then
-rejects every line the server returns, and the caller is told **`lost`** when the
-truth is *the log could not be read*. That is a lie pointing at a holder who does
-not exist. Emit `- `, accept `-`/`*`/`+`, count anything entry-shaped that fails to
-parse, and **fail loudly** once more than 2% is unparseable. Beware the silent
-pre-filter especially: a `continue` before the regex hides bad lines from the very
-counter meant to expose them.
+**4. Parse liberally, and never call an unreadable log a lost race.** The store rewrites
+what you wrote — Outline turns a `- ` bullet into `* `. Emit `- `, accept `-`/`*`/`+`,
+count anything entry-shaped that fails, and **fail loudly** past 2% unparseable. Reporting
+`lost` when the truth is *unreadable* names a holder who does not exist. Watch for a
+silent pre-filter: a `continue` before the regex hides bad lines from the counter built to
+expose them.
 
 ## Bringing this into ANY project — the whole chain
 
@@ -209,62 +199,49 @@ listed.
 acquire → do the work → release
 ```
 
-Never skip `release`, including when the work failed: an abandoned lease blocks the
-task until its TTL expires, and the next agent cannot tell "in progress" from
-"crashed an hour ago". A lease is a promise to come back.
+Never skip `release`, including on failure: an abandoned lease blocks the task until its
+TTL expires, and the next agent cannot tell "in progress" from "crashed an hour ago".
 
-**The lease is not the claim.** The lease says who holds the task *now* and
-expires; the durable claim is the tag in git — `[name]` in the directions board,
-`todo (claimed: <role>)` in a service roadmap. `acquire` writes that tag through in
-the same run and `release` clears it, so one fact keeps one home. Do not invent a
-third place to record who owns a task.
+**The lease is not the claim.** The lease says who holds it *now* and expires; the durable
+claim is the tag in git, written through by `acquire` and cleared by `release`. One fact,
+one home — do not invent a third place that records ownership.
 
-**Read `references/lease-protocol.md` before changing anything about acquisition,
-expiry, stealing or id allocation** — it carries the exact line grammar and the
-replay rules that make two agents reach the same answer.
+**Read `references/lease-protocol.md`** before changing acquisition, expiry, stealing or
+id allocation.
 
 ## Guarded files
 
-The project config lists registry files that several agents write. Before editing
-one:
+The config lists registry files several agents write. Before editing one:
 
 ```bash
 python3 "$SKILL_DIR/scripts/agent_sync.py" guard docs/DECISIONS.md
 ```
 
-Exit 2 means another run holds it. Do not edit anyway and do not "just fix one
-line" — those files are exactly where a lost write costs the most, because a
-clobbered decision looks like a decision.
+Exit 2 means another run holds it. Do not edit anyway, and do not "just fix one line" —
+a clobbered decision looks exactly like a decision.
 
-In Claude Code the `PreToolUse` hook runs this for you and denies the edit. On
-other agents nothing does; run it yourself.
+Claude Code's `PreToolUse` hook runs this for you. Elsewhere nothing does.
 
 ## Reserving an id
 
-Reading "Next free ID" from a file is not reserving it. Two agents read `DEC-0216`
-and both write `DEC-0216`.
+Reading a "Next free ID" line is not reserving it — two agents read the same number and
+both use it.
 
 ```bash
 python3 "$SKILL_DIR/scripts/agent_sync.py" reserve DEC   # → DEC-0216
 ```
 
-Allocation is positional over the append log, so every agent computes the same
-answer without trusting anyone's arithmetic. If you reserve an id and do not write
-it to git, `release-id` it — otherwise the number is a hole that the board reports
-as a leak, and nobody can tell a hole from work in a branch.
+Allocation is positional over the log, so every agent computes the same answer. Reserve
+and not write it to git? `release-id` it — otherwise the number is a hole the board
+reports as a leak, and nobody can tell a hole from work on a branch.
 
 ## Nothing in a log is ever edited or deleted
 
-The logs are **replayed in order**, so an edit silently rewrites a decision every other
-agent has already acted on. Correction is by **appending** the correcting entry:
-
-- a lease is **released**, never removed;
-- a reserved id you did not use is returned with `release-id`, which appends;
-- a wrong as-built entry is superseded by a later, correct one — both stay visible,
-  and that history is the point.
-
-Generated pages are the only exception: they are rewritten wholesale, and a page whose
-first line lost its `agent-sync:generated` marker is **refused**, not overwritten.
+Logs are **replayed in order**, so an edit silently rewrites a conclusion other agents
+already acted on. Correct by **appending**: release a lease, `release-id` an unused id,
+supersede a wrong as-built entry with a later one. Generated pages are the only
+exception, and one that lost its `agent-sync:generated` marker is **refused**, not
+overwritten. Lifetimes: `references/two-sources.md`.
 
 ## Two documentation sources, and the duty to reconcile them
 
@@ -284,17 +261,15 @@ The duty runs at both ends of every task:
   documents that state intent, then `reconcile` again. A task that updated one side
   has left the next agent a divergence to find the hard way.
 
-`reconcile` is mechanical and says so: it compares ids, commits and presence, and
-refuses to judge whether the built thing matches what the document describes. That is
-a reading, and it is yours.
+`reconcile` is mechanical and says so: it compares ids, commits and presence, and refuses
+to judge whether the built thing matches the document. That reading is yours.
 
-Every project also carries a **generated snapshot** of its own wiring — registers,
-guarded files, gates, what is written where and what is never deleted. Write it with
-`setup`, commit it, and link it from the project's agent instructions, so every agent
-reads the same description of the pipeline instead of inferring it from behaviour.
+Every project also carries a **generated snapshot** of its own wiring (`setup`) — commit
+it and link it from the agent instructions, so agents read the pipeline instead of
+inferring it.
 
-**Read `references/two-sources.md` before the first reconcile in a project**, and
-whenever deciding which side a piece of documentation belongs on.
+**Read `references/two-sources.md`** before the first reconcile, and whenever deciding
+which side a document belongs on.
 
 ## Binding to task-pipeline
 
@@ -338,23 +313,22 @@ Load it before running agents:
 set -a && . ./.env.agent-sync && set +a
 ```
 
-Never write a host name or a token into the config, a test, an example or a commit.
-Do not handle a token value, echo it, or pass it as a command-line argument. If the
-operator offers one in chat, tell them to put it in that file instead.
+Never write a host name or token into the config, a test, an example or a commit. Do not
+handle a token value, echo it, or pass it in `argv`. If the operator offers one in chat,
+tell them to put it in that file instead.
 
-**A submodule's config declares only its own registers.** Cross-repository facts
-belong to the parent repository. A service repo that lists the parent's decision
-register in its config is a configuration defect.
+**A submodule's config declares only its own registers.** Cross-repository facts belong to
+the parent; a service repo listing the parent's decision register is a config defect.
 
 ## Backends
 
-| Backend | `atomicAppend` | Read when |
-|---|---|---|
-| `outline` | yes | `references/backend-outline.md` — before touching any Outline call |
-| `fs` | no (degraded) | `references/backend-fs.md` — the git-file fallback and its limits |
+| Backend | Read when |
+|---|---|
+| `outline` | `references/backend-outline.md` — before any Outline call |
+| `fs` | `references/backend-fs.md` — local files, no shared awareness |
 
-**Read `references/adapter-contract.md` before adding a backend.** Six primitives,
-three capability flags, and a degradation path that must be honest.
+**Read `references/adapter-contract.md` before adding a backend** — six primitives, the
+capability flags, and a degradation path that must be honest.
 
 ## Generated objects
 
@@ -364,8 +338,8 @@ The board and the mirror are machine-written. Their first line is
 <!-- agent-sync:generated source=<repo>@<sha> at=<iso8601> — edit in git, not here -->
 ```
 
-A write to an object missing that marker is refused, not forced. If a human took
-over a generated page, report it and stop; do not restore your version over theirs.
+A write to an object missing that marker is refused, not forced. If a human took over a
+generated page, report it and stop.
 
 The mirror is a **rendering** of git, stamped with the source commit. It has no
 authority. When its stamp and `HEAD` disagree, the board gate fails — that is

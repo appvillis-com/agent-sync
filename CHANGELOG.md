@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.1 — 2026-07-29
+
+### Fixed — documentation that contradicted the code
+Compressing the skill surfaced three statements that measurement had already disproved and
+that nobody had gone back to correct. This is the drift the tool exists to catch, in the
+tool's own documentation.
+
+- `lease-protocol.md` opened by declaring that *no backend offers compare-and-swap, so both
+  leases and id reservations are decided by replaying one append-only log*. Half of that is
+  still true — id allocation is positional over the log — and half has been false since
+  1.0.0. It now separates the two mechanisms, because confusing them is how this went wrong
+  twice.
+- The same file still said the **run** writes the claim tag and the tool only verifies. As
+  of 1.2.0 the tool writes it through.
+- `backend-fs.md` described a "git-file lease" — commit the lock, push it, read the
+  rejection — a design that was never built. Leases have never depended on which knowledge
+  backend is configured, and the file now says so.
+
+### Changed
+- `SKILL.md` trimmed from 4779 to 4325 tokens (13% headroom under the 5000 cap), with the
+  full measurement history left in `CHANGELOG.md` and `lease-protocol.md` where it belongs.
+- `lease-protocol.md` gains the cross-machine section it was missing.
+
 ## 1.2.0 — 2026-07-29
 
 ### Added — the claim is written through to the roadmap again

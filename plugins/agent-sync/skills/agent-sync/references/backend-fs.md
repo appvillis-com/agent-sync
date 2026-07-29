@@ -5,7 +5,7 @@ what they do and do not get.
 
 ## What it is
 
-Plain files under `.agent-sync/` in the repository, committed and pushed:
+Plain files under `.agent-sync/` in the repository:
 
 ```
 .agent-sync/
@@ -22,32 +22,25 @@ Plain files under `.agent-sync/` in the repository, committed and pushed:
 { "atomicAppend": false, "totalOrderRead": false, "search": false }
 ```
 
-`atomicAppend` is false. A local `>>` is atomic for small writes on one machine, but
-agents here are separated by **git**, not by a filesystem: two agents append on two
-clones, and the merge decides the order after the fact. There is no total order at
-the moment of the decision, which is exactly when the protocol needs one.
+`atomicAppend` is false: agents on two clones append to two files, and a merge decides the
+order after the fact — not at the moment the protocol needs one.
 
 ## What follows from that
 
-**This backend is never the lease authority.** With it configured, the coordinator:
+**No adapter is ever the lease authority** — not this one, not the cloud. Exclusion comes
+from `leaseBackend` (`local` = `O_EXCL`, `git` = a pushed ref). What this backend costs is
+**awareness**: with it configured, the coordinator:
 
 1. says so at session start, in one plain sentence;
-2. uses git-file leases — a lease is a committed, pushed file, and the push either
-   wins the race or is rejected as non-fast-forward, which is the only real mutual
-   exclusion available here;
-3. marks every run `ungated` on the board.
+2. keeps the lease exactly as configured — `leaseBackend` is independent of this choice;
+3. marks every run `ungated` on the board, because nobody else can read the state.
 
-## Git-file lease
+## The lease is not this backend's job
 
-```
-1. write   .agent-sync/leases/<KEY>.lock  containing run id, ts, ttl
-2. commit  and push
-3. push rejected  -> someone else took it; fetch, read the holder, back off
-   push accepted  -> you hold it
-```
-
-The remote's fast-forward rule is the arbiter. This is slower than an append log and
-it fails whenever the network does — both are honest limits, and neither is hidden.
+Do not look for a lease mechanism here. `leaseBackend: "local"` decides with an atomic
+file create; `leaseBackend: "git"` decides with a pushed ref whose non-fast-forward
+rejection is a real compare-and-swap. Both work regardless of which knowledge backend is
+configured — see `lease-protocol.md`.
 
 ## When this is the right choice
 
@@ -58,7 +51,7 @@ it fails whenever the network does — both are honest limits, and neither is hi
 
 ## When it is the wrong choice
 
-- Several agents working at once with a shared remote and frequent pushes: the
-  rejection rate makes progress slow and the retries noisy.
-- Anything where the operator has been told the project is protected. It is not; it
-  is `ungated`, and the board must keep saying so.
+- Several agents at once: they hold leases correctly but cannot **see** each other, and
+  the whole point of the coordination plane is that they can.
+- Anything where the operator has been told the project is coordinated. The lease still
+  works; the awareness does not, and the board must keep saying `ungated`.
