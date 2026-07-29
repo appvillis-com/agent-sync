@@ -66,11 +66,29 @@
     },
     "claimTags": {
       "type": "object",
-      "description": "How a durable claim is written through to git for each file. {holder} is substituted.",
+      "description": "How a lease is written through to the roadmap. See references/roadmap.md.",
       "additionalProperties": {
         "type": "object",
-        "additionalProperties": {
-          "type": "string"
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "cell"
+            ],
+            "description": "'cell' edits one cell of the single table row containing the task id."
+          },
+          "cell": {
+            "type": "integer",
+            "description": "0-based cell index in that row; negative counts from the end."
+          },
+          "held": {
+            "type": "string",
+            "description": "Template for the held value. {prev} is the current cell text, {holder} the run id."
+          }
         }
       }
     },
@@ -101,6 +119,26 @@
     "setupFile": {
       "type": "string",
       "description": "Where the generated setup snapshot is written. Defaults to docs/AGENT_SYNC.md when docs/ exists, else AGENT_SYNC.md."
+    },
+    "leaseBackend": {
+      "type": "string",
+      "enum": [
+        "local",
+        "git"
+      ],
+      "default": "local",
+      "description": "Where a contended lease is decided. 'local' is an atomic file create \u2014 exclusive between processes on one filesystem. 'git' pushes a ref, and the remote's non-fast-forward rule is a real compare-and-swap, exclusive across machines."
+    },
+    "leaseRemote": {
+      "type": "string",
+      "default": "origin",
+      "description": "Git remote holding the lease refs when leaseBackend is 'git'."
+    },
+    "settleSeconds": {
+      "type": "number",
+      "minimum": 0,
+      "default": 3.0,
+      "description": "Unused by the git and local backends; retained for adapters that must wait for writes to become visible."
     }
   }
 }

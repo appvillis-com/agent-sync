@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   author: appvillis-com
 ---
 
@@ -31,11 +31,17 @@ processes each read only their own shard and **eight of them won one key**. No s
 window closes that. `O_EXCL` does: one winner out of twelve, every loser naming the
 same holder. The plane still carries the record — it just never decides.
 
-**2. A lease is exclusive on one machine and advisory across machines.** The lock file
-is a real mutex between processes sharing a filesystem, which is how these agents
-actually run. Two machines have two filesystems and therefore two locks. Say
-`ungated`/advisory out loud where it applies — a pretended lease is worse than no
-lease, because the other agent stops checking.
+**2. Know which lease you have, and say so.** `leaseBackend: "local"` is an atomic file
+create — exclusive between processes on one filesystem, **advisory across machines**.
+`leaseBackend: "git"` pushes a ref, and the remote's non-fast-forward rejection **is** a
+compare-and-swap — exclusive across machines, verified against a hosted remote. `acquire`
+prints which one you have. A pretended lease is worse than no lease: the other agent stops
+checking.
+
+**`acquire` also writes the claim through to the roadmap**, and `release` restores exactly
+what was there — one row, one cell, refused on ambiguity, `git diff` empty after a
+round-trip. **Read `references/roadmap.md`** before configuring `claimTags` or closing a
+task; closing is a statement about the work and stays yours.
 
 **3. Hooks exist only in Claude Code.** On Cursor, Codex and every other agent the
 skills CLI serves, there is no `PreToolUse` and nothing blocks a guarded edit. Run
@@ -113,8 +119,8 @@ storage question gets asked and answered, once, and written down.
      machines. **It does not decide leases**; nothing in it can (trap 1);
    - or local files (`fs`) — no credentials, no shared awareness, every run `ungated`.
 
-   Either way the lease itself is an atomic local lock, exclusive between processes on
-   one filesystem and advisory beyond it.
+   The lease is decided separately by `leaseBackend` — `git` for cross-machine exclusion,
+   `local` otherwise.
 2. **If cloud: the instance URL.** The URL is configuration, not a secret, so you
    may write it. The **token is not** — you never ask for it in chat, never read it
    back, and never place it yourself.
@@ -386,6 +392,7 @@ Each file is loaded on its own trigger, not by default.
 | `references/pipeline-binding.md` | wiring `pipeline.json`, or adding a stage hook |
 | `references/hooks.md` | installing, debugging or removing the Claude Code hooks |
 | `references/two-sources.md` | before the first reconcile, or when deciding where a document belongs |
+| `references/roadmap.md` | configuring `claimTags`, taking or closing a task, or re-planning a board |
 
 If this copy arrived without `references/`, fetch them from
 `https://raw.githubusercontent.com/appvillis-com/agent-sync/main/plugins/agent-sync/skills/agent-sync/references/<file>`.

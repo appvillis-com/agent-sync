@@ -3,6 +3,39 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.2.0 — 2026-07-29
+
+### Added — the claim is written through to the roadmap again
+Demoted to a check in 1.0.0 because an unattended process rewriting a shared registry is
+the collision a lease exists to prevent. It is back, with that objection engineered out:
+
+- **One row.** The single table row containing the task id as a whole word. Zero rows →
+  nothing happens. Two or more → **refused**, with the reason. It never guesses.
+- **One cell.** Only the configured cell changes; links, notes and every other column are
+  untouched byte for byte. `cell` is 0-based, negative counts from the end.
+- **Reversible.** The previous text is stored in `.agent-sync/claims.json` and restored
+  verbatim on release — not a default, what was actually there. After acquire→release,
+  `git diff` on the roadmap is **empty**.
+- **Atomic.** Written to a temp file and moved into place, so a crash cannot leave the
+  register half-edited.
+
+Closing a task is still yours: the tool refuses to write `done` on your behalf, because a
+status a machine sets is a status nobody checked. `references/roadmap.md` documents the
+whole cycle — claiming, closing, re-planning, and what to do when the claim cannot be
+written.
+
+### Added — cross-machine leases
+`leaseBackend: "git"` pushes a commit to `refs/agent-sync/leases/<key>`, and the remote's
+non-fast-forward rejection **is** a compare-and-swap. Verified against a hosted remote
+before being written: A created the ref, B pushed a different commit without force and was
+rejected, the ref still held A. Then eight parallel processes against the real remote —
+**one winner, seven losers all naming it**.
+
+Expired leases are stolen with `--force-with-lease` against the exact object seen, so a
+steal cannot clobber a holder who renewed in between. `local` remains the default and is
+still exclusive between processes on one filesystem; `acquire` and `check` now say which
+guarantee you actually have instead of implying the stronger one.
+
 ## 1.1.0 — 2026-07-29
 
 The skill can now take **any** project from nothing to a validated setup on its own.

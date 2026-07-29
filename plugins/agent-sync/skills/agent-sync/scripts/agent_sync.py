@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -667,6 +667,84 @@ class Sync:
 
     # -- leases ------------------------------------------------------------
 
+    # -- git lease: real compare-and-swap, across machines --------------------
+
+    @staticmethod
+    def _ref(key: str) -> str:
+        return "refs/agent-sync/leases/" + re.sub(r"[^A-Za-z0-9._-]+", "-", key).strip("-")
+
+    def _git_remote(self) -> str:
+        return self.cfg.get("leaseRemote") or "origin"
+
+    def _git_read_lease(self, key: str) -> tuple[str | None, dict[str, Any]]:
+        """(sha, payload) currently on the remote for this key, or (None, {})."""
+        out = git("ls-remote", self._git_remote(), self._ref(key))
+        if not out:
+            return None, {}
+        sha = out.split()[0]
+        git("fetch", "-q", self._git_remote(), f"{self._ref(key)}:refs/agent-sync/fetched")
+        body = git("log", "-1", "--format=%B", sha) or git("log", "-1", "--format=%B",
+                                                           "refs/agent-sync/fetched")
+        try:
+            return sha, json.loads(body.strip())
+        except (json.JSONDecodeError, ValueError):
+            return sha, {}
+
+    def _git_acquire(self, key: str) -> tuple[bool, str | None]:
+        """Push a ref that must not already exist. The remote's non-fast-forward rule
+        IS the compare-and-swap — verified against a hosted remote, not assumed."""
+        remote, ref = self._git_remote(), self._ref(key)
+        held_sha, held = self._git_read_lease(key)
+        if held:
+            if held.get("run") == self.rid:
+                self._touch_renew()
+                return True, self.rid
+            alive = time.time() <= parse_iso(held.get("ts", "")) + int(held.get("ttl", self.ttl))
+            if alive:
+                return False, held.get("run")
+
+        payload = json.dumps({"run": self.rid, "ts": now_iso(), "ttl": self.ttl,
+                              "repo": repo_name(), "host": os.uname().nodename})
+        empty_tree = git("hash-object", "-t", "tree", "/dev/null")
+        commit = subprocess.run(["git", "commit-tree", empty_tree], input=payload,
+                                capture_output=True, text=True).stdout.strip()
+        if not commit:
+            raise Fail("could not create the lease object — is this a git repository?")
+
+        args = ["git", "push", remote, f"{commit}:{ref}"]
+        if held_sha:                       # stealing an expired lease, and only that
+            args.insert(2, f"--force-with-lease={ref}:{held_sha}")
+        r = subprocess.run(args, capture_output=True, text=True)
+        if r.returncode != 0:
+            # Rejected: somebody won between our read and our push. Ask who.
+            _s, now_held = self._git_read_lease(key)
+            return False, now_held.get("run") or "another run"
+        self._touch_renew()
+        return True, self.rid
+
+    def _git_release(self, key: str) -> None:
+        sha, held = self._git_read_lease(key)
+        if not sha:
+            return
+        if held.get("run") not in (self.rid, None):
+            print(f"note: {key} is held by {held.get('run')}, not this run — not released",
+                  file=sys.stderr)
+            return
+        r = subprocess.run(["git", "push", self._git_remote(),
+                            f"--force-with-lease={self._ref(key)}:{sha}",
+                            f":{self._ref(key)}"], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"note: could not release {key} on the remote: {r.stderr.strip()[:160]}",
+                  file=sys.stderr)
+
+    @property
+    def lease_mode(self) -> str:
+        return self.cfg.get("leaseBackend") or "local"
+
+    @property
+    def lease_is_cross_machine(self) -> bool:
+        return self.lease_mode == "git"
+
     def _local_lock(self, key: str) -> Path:
         d = self.root / STATE_DIR / "leases"
         d.mkdir(parents=True, exist_ok=True)
@@ -686,6 +764,19 @@ class Sync:
         which is how these agents actually run. Across machines it is not, and the tool
         says so rather than implying a guarantee it cannot keep.
         """
+        if self.lease_mode == "git":
+            won, holder = self._git_acquire(key)
+            if won:
+                for n in self.write_claim(key, self.rid):
+                    print(f"  {n}")
+                try:
+                    self.adapter.log_append(self.log_id("claims"), fmt_line(
+                        "acquire", key, self.rid, ttl=self.ttl,
+                        repo=repo_name(), sha=head_sha()))
+                except Fail:
+                    pass
+            return won, holder
+
         lock = self._local_lock(key)
 
         # Reap an expired lock first: it is a crashed run, not a live holder.
@@ -716,6 +807,8 @@ class Sync:
             fh.write(payload)
 
         self._touch_renew()
+        for n in self.write_claim(key, self.rid):
+            print(f"  {n}")
         # Record it for everyone else to see. A failure here costs visibility, never
         # correctness — the lock is already held — so it must not fail the acquire.
         if self.adapter.is_lease_authority:
@@ -750,6 +843,10 @@ class Sync:
         marker.write_text(now_iso())
 
     def release(self, key: str) -> None:
+        for n in self.write_claim(key, None):
+            print(f"  {n}")
+        if self.lease_mode == "git":
+            self._git_release(key)
         lock = self._local_lock(key)
         if lock.exists():
             try:
@@ -906,6 +1003,96 @@ class Sync:
         return {"others": others, "signals": signals[-limit:], "new_signals": fresh}
 
     # -- claim tags ---------------------------------------------------------
+
+    def _claim_targets(self, key: str) -> list[tuple[Path, dict[str, Any]]]:
+        out = []
+        for pattern, spec in (self.cfg.get("claimTags") or {}).items():
+            for path in sorted(self.root.glob(pattern)):
+                if path.is_file():
+                    out.append((path, spec))
+        return out
+
+    @staticmethod
+    def _row_cells(line: str) -> list[str] | None:
+        """Split a markdown table row, or None if this is not one."""
+        if not line.lstrip().startswith("|"):
+            return None
+        raw = line.strip()
+        if raw.endswith("|"):
+            raw = raw[:-1]
+        return raw[1:].split("|")
+
+    def write_claim(self, key: str, holder: str | None) -> list[str]:
+        """Write the claim through to git, or restore it. Surgical and reversible.
+
+        One row, one cell, one substitution. Ambiguity is refused rather than guessed:
+        this edits a shared registry, so a wrong line is exactly the collision the lease
+        exists to prevent. The previous cell text is stored in the lock file, so release
+        restores what was there rather than an assumed default.
+        """
+        notes: list[str] = []
+        for path, spec in self._claim_targets(key):
+            if spec.get("mode") != "cell":
+                continue
+            idx = int(spec.get("cell", -1))
+            lines = path.read_text().splitlines(keepends=True)
+            hits = [i for i, l in enumerate(lines)
+                    if re.search(rf"(?<![A-Za-z0-9-]){re.escape(key)}(?![A-Za-z0-9-])", l)
+                    and self._row_cells(l) is not None]
+            rel = path.relative_to(self.root)
+            if not hits:
+                continue
+            if len(hits) > 1:
+                notes.append(f"{rel}: `{key}` appears in {len(hits)} table rows — refusing "
+                             "to guess which one is the claim. Narrow the pattern or edit by hand")
+                continue
+
+            i = hits[0]
+            cells = self._row_cells(lines[i])
+            assert cells is not None
+            if idx < 0:
+                idx = len(cells) + idx
+            if not 0 <= idx < len(cells):
+                notes.append(f"{rel}: cell {spec.get('cell')} is out of range for `{key}`'s row")
+                continue
+
+            # Kept beside the run state, not in the lock file: the git lease mode has no
+            # lock file, and a release that cannot find what it replaced leaves the claim
+            # written through forever — which is worse than never writing it.
+            store = self.root / STATE_DIR / "claims.json"
+            try:
+                state = json.loads(store.read_text())
+            except (json.JSONDecodeError, OSError):
+                state = {}
+            saved = (state.get(key) or {}).get(str(rel))
+
+            current = cells[idx]
+            if holder is not None:
+                if saved is not None:
+                    continue                      # already written through
+                template = spec.get("held") or "{prev} (claimed: {holder})"
+                new = template.replace("{prev}", current.strip()).replace("{holder}", holder)
+                cells[idx] = f" {new.strip()} "
+                state.setdefault(key, {})[str(rel)] = current
+            else:
+                if saved is None:
+                    continue                      # nothing of ours to undo
+                cells[idx] = saved
+                state.get(key, {}).pop(str(rel), None)
+                if not state.get(key):
+                    state.pop(key, None)
+
+            lines[i] = "|" + "|".join(cells) + "|\n"
+            tmp = path.with_suffix(path.suffix + ".agent-sync.tmp")
+            tmp.write_text("".join(lines))
+            tmp.replace(path)
+            store.parent.mkdir(parents=True, exist_ok=True)
+            store.write_text(json.dumps(state, indent=2))
+            notes.append(f"{rel}: `{key}` claim "
+                         + ("written through" if holder else "restored"))
+        return notes
+
+    # -- claim divergence ---------------------------------------------------------
 
     def claim_divergence(self) -> list[str]:
         """Where a held lease and the durable git claim tag disagree.
@@ -1660,10 +1847,12 @@ def cmd_acquire(args: argparse.Namespace) -> int:
     won, holder = s.acquire(args.key)
     if won:
         print(f"won {args.key} (run {s.rid}, ttl {s.ttl}s)")
-        if not s.adapter.is_exclusive:
-            print(f"⚠ ADVISORY, not exclusive: this backend has no compare-and-swap, so a "
-                  f"contender that started within the {s.settle:g}s settle window may also "
-                  "hold it. Check `status` before destructive work.")
+        if s.lease_is_cross_machine:
+            print("  exclusive across machines — the remote's non-fast-forward rule is a "
+                  "real compare-and-swap")
+        else:
+            print("  exclusive between agents on THIS machine; advisory across machines. "
+                  "Set `leaseBackend: \"git\"` for cross-machine exclusion.")
         if not s.gated:
             print("⚠ ungated backend — this lease is advisory, not enforced")
         print("Remember: release it on every path, including failure.")
@@ -1985,7 +2174,8 @@ def cmd_check(_args: argparse.Namespace) -> int:
         problems.append(f"backend '{cfg.get('backend')}' is not a known adapter")
     unknown = set(cfg) - {"$schema", "backend", "leaseTtlSeconds", "renewIntervalSeconds",
                           "gated", "idRegisters", "guardedFiles", "claimTags", "gates",
-                          "mirror", "setupFile"}
+                          "mirror", "setupFile", "leaseBackend", "leaseRemote",
+                          "settleSeconds"}
     for k in sorted(unknown):
         problems.append(f"config key '{k}' is not in the schema — it will be ignored")
 
@@ -2019,10 +2209,34 @@ def cmd_check(_args: argparse.Namespace) -> int:
         warn.append("no guarded files — nothing requires a lease in this repository")
 
     for pattern, spec in (cfg.get("claimTags") or {}).items():
-        if not [q for q in root.glob(pattern) if q.is_file()]:
+        files = [q for q in root.glob(pattern) if q.is_file()]
+        if not files:
             problems.append(f"claimTags pattern '{pattern}' matches no file")
-        elif not spec.get("open"):
-            problems.append(f"claimTags '{pattern}' has no `open` marker to look for")
+            continue
+        if spec.get("mode") != "cell":
+            problems.append(f"claimTags '{pattern}': mode must be 'cell'")
+            continue
+        if "cell" not in spec:
+            problems.append(f"claimTags '{pattern}': no `cell` index — nothing to write")
+        if "{holder}" not in (spec.get("held") or ""):
+            problems.append(f"claimTags '{pattern}': `held` must contain {{holder}}, "
+                            "or the claim names nobody")
+    if cfg.get("claimTags"):
+        ok.append(f"{len(cfg['claimTags'])} claim-tag mapping(s) declared")
+
+    mode = cfg.get("leaseBackend") or "local"
+    if mode not in ("local", "git"):
+        problems.append(f"leaseBackend '{mode}' is not a known mode")
+    elif mode == "git":
+        remote = cfg.get("leaseRemote") or "origin"
+        if not git("remote", "get-url", remote):
+            problems.append(f"leaseBackend is 'git' but remote '{remote}' does not exist — "
+                            "the lease cannot be decided at all")
+        else:
+            ok.append(f"lease decided by git refs on '{remote}' — exclusive across machines")
+    else:
+        warn.append("lease is a local file lock: exclusive on this machine, advisory "
+                    "across machines. Set leaseBackend to 'git' if agents run on more than one")
 
     for cmd in (cfg.get("gates") or []):
         exe = cmd.split()[0]

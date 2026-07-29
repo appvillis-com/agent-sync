@@ -20,10 +20,10 @@
     "docs/ROADMAP.md"
   ],
   "claimTags": {
-    "docs/WORKSTREAMS.md": {
-      "open": "[OPEN]",
-      "held": "[{holder}]",
-      "done": "[done]"
+    "docs/ROADMAP.md": {
+      "mode": "cell",
+      "cell": -1,
+      "held": "{prev} (claimed: {holder})"
     }
   },
   "gates": [
@@ -31,6 +31,10 @@
   ],
   "mirror": {
     "enabled": true,
-    "sources": ["docs/DECISIONS.md", "docs/ROADMAP.md"]
-  }
+    "sources": [
+      "docs/DECISIONS.md",
+      "docs/ROADMAP.md"
+    ]
+  },
+  "leaseBackend": "git"
 }
