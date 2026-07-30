@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.7 — 2026-07-30
+
+The move in 1.3.6 was performed twice, by two agents in this repository at the same
+minute, and neither held a lease on it. Both renames were correct and nearly identical;
+this release carries what only one of them had, and is the release that moves the npm
+package page — 1.3.6 was tagged but never published.
+
+### Changed
+- **`LICENSE` and the README footer read `ssheleg`.** The rename moved every address and
+  every manifest identity, and left the copyright line naming the previous owner — the one
+  statement in the repository with legal weight.
+
+### Added
+- **`test/validate.py` fails a half-finished rename.** It derives the canonical slug from
+  `package.json` and rejects any other owner of this repository name anywhere in the tree:
+  in a URL, in a `github:` install argument, in a `marketplace add` line, or as a bare
+  quoted slug. That last shape is what the installers actually clone, and the first draft
+  of the check missed it — `bin/agent-sync.js` and `install.sh` both passed while still
+  pointing at the old owner. Verified red against the pre-rename tree; the self-test
+  fixture assembles its slug from parts, because written whole it makes the validator the
+  file that fails the check.
+
 ## 1.3.6 — 2026-07-30
 
 ### Changed
