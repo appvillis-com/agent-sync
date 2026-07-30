@@ -36,5 +36,10 @@
       "docs/ROADMAP.md"
     ]
   },
-  "leaseBackend": "git"
+  "leaseBackend": "git",
+  "integrationBranch": "main",
+  "mergeLog": {
+    "file": "docs/MERGES.md",
+    "retentionDays": 7
+  }
 }

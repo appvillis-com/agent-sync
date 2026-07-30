@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.3.8"
+  version: "1.4.0"
   author: ssheleg
 ---
 
@@ -37,6 +37,16 @@ what was there — one row, one cell, refused on ambiguity, `git diff` empty aft
 round-trip. **Read `references/roadmap.md`** before configuring `claimTags` or closing a
 task; closing is a statement about the work and stays yours.
 
+**Work on a branch; the integration branch is somebody else's stable base.** `acquire`
+writes the claim through **only** there; on any other branch the holder stays in the
+coordination plane, where `status` shows it to every agent without anyone fetching your
+branch. Committed to a branch, a claim is invisible until the merge and turns the shared
+roadmap into a file two branches both edit. Land work with `merge`: conflicts computed by
+`git merge-tree` **before anything is touched**, named and refused if any, the merge
+recorded in `docs/MERGES.md` (recent days in full, older compacted on write), the lease
+released. `merges` tells the next agent what landed while it was away. **Read
+`references/branching.md`** before merging.
+
 **3. Hooks exist only in Claude Code.** Elsewhere nothing blocks a guarded edit: run
 `guard` yourself and record the run as `ungated`. Do not describe a project as protected
 when it is not.
@@ -60,16 +70,12 @@ setup     → generate the snapshot that describes this project's wiring
 check     → validate the whole thing; non-zero if it is not healthy
 ```
 
-**`check` is what makes the skill self-sufficient.** It refuses to call a setup healthy
-on any of: a register file that does not exist or whose allocation pattern matches
-nothing; a guard glob that matches no file (a rule that protects nothing); a claim-tag
-pattern with nothing to look for; a gate command whose script is missing; a mirror source
-that is not there; missing or empty credentials; a `.gitignore` that does not cover the
-env file — or the env file being **tracked by git**, which is the one unrecoverable
-mistake here; a missing, hand-edited or stale snapshot; **a snapshot no agent instruction
-file links**, because agents that cannot find it will infer the pipeline instead; and a
-register with no as-built baseline. Every one of those failed for real during this tool's
-own adoption.
+**`check` is what makes the skill self-sufficient.** It refuses to call a setup healthy on
+a rule that protects nothing (a register, guard glob, claim pattern, gate or mirror source
+pointing at what is not there), on missing credentials, on an env file **tracked by git** —
+the one unrecoverable mistake here — on a stale or unlinked snapshot, and on a register
+with no baseline. It names each one; every one failed for real during this tool's own
+adoption.
 
 Run `check` after adopting, after changing the config, and in CI.
 
@@ -88,11 +94,10 @@ then proposes a config. It writes nothing.
 python3 "$SKILL_DIR/scripts/agent_sync.py" adopt
 ```
 
-Confirm the registers and guarded files with the operator before writing them. A
-register pointed at the wrong file makes every later check confidently wrong, and a
-guarded list that misses a shared file leaves the one place collisions actually happen
-unprotected. In a submodule it declares no registers at all: decisions belong to the
-parent repository.
+Confirm the registers and guarded files with the operator first: a register pointed at the
+wrong file makes every later check confidently wrong, and a guarded list that misses a
+shared file leaves the one place collisions happen unprotected. In a submodule it declares
+no registers: decisions belong to the parent repository.
 
 Then: `init` → paste the approved config → `reconcile --set-baseline` → `setup` →
 commit the snapshot and link it from the project's agent instructions.
@@ -157,12 +162,9 @@ ONE next action.
 An agent that skips this block will re-derive work someone else is doing and act on a
 dependency state that changed an hour ago.
 
-What else `status` decides for you:
-
-- No credentials in the environment → degraded mode, reported, and it continues.
-  Missing credentials are not an error, they are a smaller mode.
-- `task-pipeline` absent → it prints the install line and stops. Do not improvise a
-  substitute flow; without those stages there is nothing to bind to.
+What else `status` decides: no credentials → degraded mode, reported, and it continues (a
+smaller mode, not an error); `task-pipeline` absent → it prints the install line and stops.
+Do not improvise a substitute flow — without those stages there is nothing to bind to.
 
 ```bash
 npx sshlg-skills install
@@ -189,7 +191,8 @@ npx sshlg-skills install
 | `whoami` | Print this run's id and its held leases |
 | `setup` | Write the generated snapshot of how **this** project is wired, for agents to read |
 | `adopt` | Inspect an existing project and **propose** a config — writes nothing |
-| `scaffold` | Create the missing documentation architecture. Never overwrites |
+| `merge` | Land this branch: conflicts checked **before** anything is touched, merge log written, lease released. `--key`, `--summary`, `--dry-run`, `--push` |
+| `merges` | What landed while you were on your branch. `--all` includes the compacted tail |
 | `check` | Validate the whole setup end to end. Non-zero when it is not healthy |
 | `scaffold [--full]` | Create only what is missing, never a line over anything that exists. `--full` also seeds the question register, the index, the dependency board, the data model with its entity register, and the docs gate |
 | `finish [--gates]` | Is the **work** finished — every repository clean, pushed and pointed at, no lease left held. `check` answers whether the project is wired correctly; this answers whether you are done |
@@ -209,12 +212,12 @@ guarded, and `release` takes a lease the caller never had.
 The order is: `AGENT_SYNC_RUN_ID` · `CLAUDE_SESSION_ID` · **the session that started this shell** ·
 shared.
 
-The third is the one that matters, because a plain shell command has no session id and a hook does.
-So `SessionStart` stamps `.agent-sync/sessions/<the CLI's pid>` with the session it knows, and a
-later command finds itself by walking its own process ancestry to a pid that appears there. It is
-exact, and it deliberately does **not** parse command lines: the throwaway shell every tool call
-runs in carries claude paths in its own argv, so every heuristic aimed at the CLI binary matched it
-instead. Stamps are removed when their process is gone.
+The third matters because a plain shell command has no session id and a hook does. So
+`SessionStart` stamps `.agent-sync/sessions/<CLI pid>` with the session it knows, and a later
+command finds itself by walking its own process ancestry to a stamped pid — exact, and
+deliberately not command-line parsing: the throwaway shell every tool call runs in carries
+claude paths in its argv, so every heuristic aimed at the binary matched it instead. Stamps
+are removed when their process is gone.
 
 When none of the four can be established the run says so — *"this identity is shared with any other
 session in this checkout"* — rather than presenting a shared entry as separation.
@@ -278,14 +281,13 @@ answer different questions. **The gap between them is the finding**, not a defec
 
 The duty runs at both ends of every task:
 
-- **Before starting** (docs-study stage) — `reconcile`, then read both sides for the
-  area you are about to touch. Resolve each divergence: the git doc is stale, or the
-  as-built record is wrong, or they genuinely disagree and that is a decision to make.
-  Building on an unresolved divergence means writing code against a system that does
-  not exist.
-- **After finishing** (docs stage) — `record` what you actually built, update the git
-  documents that state intent, then `reconcile` again. A task that updated one side
-  has left the next agent a divergence to find the hard way.
+- **Before starting** (docs-study stage) — `reconcile`, then read both sides for the area
+  you are about to touch, and resolve each divergence: the git doc is stale, the as-built
+  record is wrong, or they genuinely disagree and that is a decision. Building on an
+  unresolved divergence is writing code against a system that does not exist.
+- **After finishing** (docs stage) — `record` what you built, update the git documents
+  that state intent, then `reconcile` again. A task that updated one side leaves the next
+  agent a divergence to find the hard way.
 
 `reconcile` is mechanical and says so: it compares ids, commits and presence, and refuses
 to judge whether the built thing matches the document. That reading is yours.
@@ -302,17 +304,12 @@ which side a document belongs on.
 This skill supplies stages; it does not define them. Stage names are
 `task-pipeline`'s own.
 
-| Stage | What to do here |
-|---|---|
-| 0 Intake grill | Add the cloud KB and the board to the harvest's source ledger; `acquire` **before** the brief is committed |
-| 1 Docs study | `reconcile` — study git docs **and** the as-built record, resolve every divergence before writing code |
-| 2 Brainstorm | `journal`; warn if a live run holds an overlapping key |
-| 3 Spec | `reserve` every id before writing it to git |
-| 4 Plan | Register file ownership for the plan's parallel groups |
-| 5 Dev | Lease renews itself; own the submodule-commit → parent-gitlink bump |
-| 6 Tests · 7 Lint · 8 Post-deploy | `journal` each gate result |
-| 9 Docs + wiki | The main write point — `record` what was built, update the git docs, `signal` the dependency flips, `reconcile` again, then `board` |
-| 10 Acceptance | `release` every lease, write the durable claim tag through to done |
+Four of the eleven stages carry a rule the others do not, and each is about ordering:
+**0** `acquire` before the brief is committed; **1** `reconcile` and resolve every
+divergence before writing code; **3** `reserve` every id before it reaches git; **9**
+`record`, `signal`, `reconcile`, `board` — the main write point. **10** ends the run:
+`merge` if the work is on a branch, otherwise `release` every lease by hand. Full table
+with the reasoning per stage: `references/pipeline-binding.md`.
 
 **Read `references/pipeline-binding.md` when wiring `pipeline.json`** — it holds the
 `skills[]` entries and the gate expressions.
@@ -401,6 +398,7 @@ Each file is loaded on its own trigger, not by default.
 | `references/hooks.md` | installing, debugging or removing the Claude Code hooks |
 | `references/two-sources.md` | before the first reconcile, or when deciding where a document belongs |
 | `references/roadmap.md` | configuring `claimTags`, taking or closing a task, or re-planning a board |
+| `references/branching.md` | starting work that will produce commits, merging a branch, or asking what landed while you were away |
 
 If this copy arrived without `references/`, fetch them from
 `https://raw.githubusercontent.com/ssheleg/agent-sync/main/plugins/agent-sync/skills/agent-sync/references/<file>`.

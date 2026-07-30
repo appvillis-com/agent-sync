@@ -139,6 +139,26 @@
       "minimum": 0,
       "default": 3.0,
       "description": "Unused by the git and local backends; retained for adapters that must wait for writes to become visible."
+    },
+    "integrationBranch": {
+      "type": "string",
+      "description": "The branch work lands on. Claims are written through only there; on any other branch the holder lives in the coordination plane until `merge`. Default: the repository's own default branch."
+    },
+    "mergeLog": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The record of what landed on the integration branch, written by `merge`.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the log, relative to the repository root. Default docs/MERGES.md."
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many days keep full detail; older entries are compacted to one line on the next write. Default 7."
+        }
+      }
     }
   }
 }
