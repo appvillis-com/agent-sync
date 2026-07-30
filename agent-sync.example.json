@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/appvillis-com/agent-sync/main/agent-sync.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ssheleg/agent-sync/main/agent-sync.schema.json",
   "backend": "outline",
   "leaseTtlSeconds": 2700,
   "renewIntervalSeconds": 300,

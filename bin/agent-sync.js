@@ -15,7 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const REPO = 'appvillis-com/agent-sync';
+const REPO = 'ssheleg/agent-sync';
 const NAME = 'agent-sync';
 const SHADOW = path.join(os.homedir(), '.claude', 'skills', NAME);
 

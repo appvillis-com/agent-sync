@@ -4,7 +4,7 @@
 # skills CLI, never this file.
 set -eu
 
-REPO="appvillis-com/agent-sync"
+REPO="ssheleg/agent-sync"
 NAME="agent-sync"
 SHADOW="$HOME/.claude/skills/$NAME"
 

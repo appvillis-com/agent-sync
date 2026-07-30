@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/ssheleg/sshlg-skills/issues
     about: agent-sync ships in the sshlg-skills bundle; install and update problems belong there.
   - name: Security vulnerability
-    url: https://github.com/appvillis-com/agent-sync/security/advisories/new
+    url: https://github.com/ssheleg/agent-sync/security/advisories/new
     about: Report privately. Please do not open a public issue.

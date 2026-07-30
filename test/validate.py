@@ -366,6 +366,47 @@ def check_hooks_manifest() -> None:
                     err(f"hooks.json/{event}: command target {m.group(1)} does not exist")
 
 
+def check_repo_slug_consistent() -> None:
+    """One repository, one address. A rename that reaches some files and not others
+    leaves the installer cloning one repo while the README, the badge and the schema
+    `$id` point at another — and the redirect that hides it disappears the moment the
+    old name is taken by someone else.
+
+    `CHANGELOG.md` and `docs/` are exempt: they record what shipped and what was
+    designed at the time, and correcting history is a different kind of lie.
+    """
+    pkg = json.loads((ROOT / "package.json").read_text())
+    m = re.search(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$",
+                  pkg.get("repository", {}).get("url", ""))
+    if not m:
+        err("package.json: repository.url is not a github.com slug — nothing to check against")
+        return
+    owner, repo = m.group(1), m.group(2)
+
+    # Two shapes. A URL or an install argument, and — because that is what the installers
+    # actually clone — a bare slug in quotes. The quoted form must close right after the
+    # repository name, or every "bin/agent-sync.js" path in the tree reads as a slug.
+    refs = (
+        re.compile(r"(?:github\.com/|github:|raw\.githubusercontent\.com/|marketplace add )"
+                   rf"([A-Za-z0-9_.-]+)/{re.escape(repo)}\b"),
+        re.compile(rf"""["']([A-Za-z0-9_.-]+)/{re.escape(repo)}["']"""),
+    )
+    skip_dirs = {".git", "node_modules", "docs", ".agent-sync"}
+    for f in sorted(ROOT.rglob("*")):
+        if not f.is_file() or f.name == "CHANGELOG.md":
+            continue
+        if set(f.relative_to(ROOT).parts) & skip_dirs:
+            continue
+        try:
+            text = f.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for found in {o for r in refs for o in r.findall(text)}:
+            if found != owner:
+                err(f"{rel(f)}: points at '{found}/{repo}', but the package repository is "
+                    f"'{owner}/{repo}' — a half-finished rename sends users to two repositories")
+
+
 def check_lease_report_agrees() -> None:
     """Every surface that reports what a lease is worth must say the same thing.
 
@@ -588,6 +629,7 @@ def main() -> int:
     check_hooks_manifest()
     check_hooks_noop_without_config()
     check_lease_report_agrees()
+    check_repo_slug_consistent()
     check_lease_held_is_visible()
     check_release_refuses_other_runs()
 
@@ -635,6 +677,15 @@ def self_test() -> int:
                                     '    print(f"  lease          : {s.lease_mode} — {headline}")',
                                     '    print(f"  lease authority: '
                                     '{\'yes\' if ad.is_lease_authority else \'no\'}")')),
+        # A rename that reached package.json and stopped there: the installer would
+        # still clone the old owner, and only a redirect would hide it. The slug is
+        # assembled from parts for the same reason the leaked host above is — written
+        # whole, this fixture is itself a foreign slug in a published file, and the
+        # check would fail on the validator that carries it.
+        "half-finished rename": ("bin/agent-sync.js",
+                                 lambda t: re.sub(r"const REPO = '[^']+'",
+                                                  "const REPO = '" + "previous-owner"
+                                                  + "/agent-" + "sync'", t)),
         "stray SKILL.md": (None, None),
     }
     original_root = ROOT

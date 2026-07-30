@@ -1,6 +1,6 @@
 {
   "name": "@ssheleg/agent-sync",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "description": "Let concurrent coding agents share one project without colliding \u2014 leases with TTL, race-free id reservation, a run journal and a generated board, over a pluggable knowledge cloud.",
   "bin": {
     "agent-sync": "bin/agent-sync.js"
@@ -30,15 +30,15 @@
     "knowledge-base",
     "task-pipeline"
   ],
-  "homepage": "https://github.com/appvillis-com/agent-sync",
+  "homepage": "https://github.com/ssheleg/agent-sync",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/appvillis-com/agent-sync.git"
+    "url": "git+https://github.com/ssheleg/agent-sync.git"
   },
   "bugs": {
-    "url": "https://github.com/appvillis-com/agent-sync/issues"
+    "url": "https://github.com/ssheleg/agent-sync/issues"
   },
-  "author": "appvillis-com",
+  "author": "ssheleg",
   "license": "MIT",
   "engines": {
     "node": ">=18"

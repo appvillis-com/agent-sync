@@ -3,6 +3,31 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.6 — 2026-07-29
+
+### Changed — the repository lives at `ssheleg/agent-sync`
+The move from `appvillis-com` is a 301 today, and a 301 is not a plan: it disappears the
+moment the old name is claimed by someone else, and `raw.githubusercontent.com` — where the
+schema `$id` and the reference links point — is the part nobody notices breaking.
+
+- every address, the installers (`bin/agent-sync.js`, `install.sh`) included, the CI badge,
+  the schema `$id` and the `$schema` line of the example, the Cursor rule, the issue
+  template and the security-advisory link
+- owner and author across `package.json`, `plugin.json`, `marketplace.json` and the skill's
+  front matter; `LICENSE` and the README footer now read `ssheleg`
+- `CHANGELOG.md` and `docs/` keep the old address on purpose: they record what shipped and
+  what was designed at the time, and correcting that is a different kind of lie
+
+**npm carries the repository link from the published `package.json`, so it only moves with a
+release** — which is what this one is for.
+
+### Added
+- **`test/validate.py` fails a half-finished rename.** It derives the canonical slug from
+  `package.json` and rejects any other owner of this repository name anywhere in the tree —
+  in a URL, in a `github:` install argument, in a `marketplace add` line, or as a bare quoted
+  slug, which is the form the installers actually clone and the form the first draft of this
+  check missed. Verified red against the pre-rename tree.
+
 ## 1.3.5 — 2026-07-29
 
 ### The two rules this plugin enforces are now stated, with the failures that taught them

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/appvillis-com/agent-sync/main/agent-sync.schema.json",
+  "$id": "https://raw.githubusercontent.com/ssheleg/agent-sync/main/agent-sync.schema.json",
   "title": "agent-sync project configuration",
   "description": "Shape only. Identity (instance URL, token, container id) lives in .env.agent-sync and is never committed.",
   "type": "object",
