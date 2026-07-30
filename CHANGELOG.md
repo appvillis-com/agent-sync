@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.5 — 2026-07-29
+
+### The two rules this plugin enforces are now stated, with the failures that taught them
+
+Both are already code. Neither was written down, and a mechanism nobody can explain is a mechanism
+the next person removes.
+
+- **Identity comes before coordination.** Both ways of getting it wrong have happened here: one
+  session with two identities (acquired as one, denied by its own guard as the other) and two
+  sessions with one identity, which is worse because it is silent — `whoami` reported a lease that
+  belonged to somebody else and `release` would have taken it.
+- **Work in a submodule is not finished until its parent points at it.** Neither repository looks
+  wrong alone; the disagreement lives between them, which is why it survives every check that runs
+  inside one. That is what `finish` is for.
+- **The rule under both:** before trusting a tool's report about the world, make it report something
+  you can already verify.
+
 ## 1.3.4 — 2026-07-29
 
 ### Fixed

@@ -4,7 +4,7 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.3.4"
+  version: "1.3.5"
   author: appvillis-com
 ---
 
@@ -371,12 +371,20 @@ The mirror is a **rendering** of git, stamped with the source commit. It has no
 authority. When its stamp and `HEAD` disagree, the board gate fails — that is
 drift, not a formatting problem.
 
+## Two rules, and the failures that taught them
+
+Identity comes before coordination: a lease is only a lease if two agents get two identities. A
+submodule commit is unfinished until its parent points at it. Both:
+[`references/earned-rules.md`](references/earned-rules.md).
+
 ## Non-negotiables
 
 - Append, read back, then act. Never rewrite a coordination document.
 - `release` what you `acquire`, on every path including failure.
 - Credentials never reach `argv`, a log line, or the repository.
 - Degrade out loud. `ungated` is an acceptable state; a false claim of enforcement is not.
+- Two agents in one checkout are two identities, or the lease is decoration.
+- A submodule commit is unfinished until the parent points at it — `finish` before you call it done.
 - Everything the cloud holds about a durable fact is a link to git, never a substitute.
 
 ## References

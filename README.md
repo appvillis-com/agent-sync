@@ -403,6 +403,7 @@ agent loads on their own trigger rather than by default:
 | [`pipeline-binding.md`](plugins/agent-sync/skills/agent-sync/references/pipeline-binding.md) | wiring `pipeline.json`, or adding a stage hook |
 | [`hooks.md`](plugins/agent-sync/skills/agent-sync/references/hooks.md) | installing, debugging or removing the Claude Code hooks |
 | [`two-sources.md`](plugins/agent-sync/skills/agent-sync/references/two-sources.md) | before the first reconcile, or when deciding where a document belongs |
+| [`earned-rules.md`](plugins/agent-sync/skills/agent-sync/references/earned-rules.md) | why identity is resolved the way it is, and why `finish` exists — the two failures that produced both |
 | [`roadmap.md`](plugins/agent-sync/skills/agent-sync/references/roadmap.md) | configuring `claimTags`, taking or closing a task, or re-planning a board |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Everyone
