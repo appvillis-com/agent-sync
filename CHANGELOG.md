@@ -49,6 +49,14 @@ and no log that grows until people stop reading it — which is the same as not 
   self-test fixtures that remove the guard and confirm the check goes red.
 - `references/branching.md`, and the doctrine in the skill body.
 
+## 1.3.9 — 2026-07-30
+
+### Changed
+- `license: MIT` added to the `marketplace.json` plugin entry. The front matter
+  already declared it — this repo was the only one in the family that did — but
+  the plugin listing, which is what a user reads before installing, did not.
+
+
 ## 1.3.8 — 2026-07-30
 
 The 1.3.6 move was performed twice, by two agents in this repository within the same

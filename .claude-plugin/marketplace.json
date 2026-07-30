@@ -16,6 +16,7 @@
       "author": {
         "name": "ssheleg"
       },
+      "license": "MIT",
       "keywords": [
         "multi-agent",
         "coordination",
