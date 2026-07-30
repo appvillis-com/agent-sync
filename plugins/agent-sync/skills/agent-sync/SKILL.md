@@ -4,8 +4,8 @@ description: "Use when several coding agents work one repository at the same tim
 compatibility: "Requires the task-pipeline skill for its stages (npx sshlg-skills install). Needs python3 3.9+ (stdlib only, HTTP included - nothing to pip install) and bash for the hooks. The knowledge backend is configured per project; with none configured it degrades to git-file leases. Enforcement hooks are Claude Code only - on other agents the same checks run as a self-check."
 license: MIT
 metadata:
-  version: "1.3.5"
-  author: appvillis-com
+  version: "1.3.6"
+  author: ssheleg
 ---
 
 # agent-sync — one project, many agents, no collisions
@@ -403,4 +403,4 @@ Each file is loaded on its own trigger, not by default.
 | `references/roadmap.md` | configuring `claimTags`, taking or closing a task, or re-planning a board |
 
 If this copy arrived without `references/`, fetch them from
-`https://raw.githubusercontent.com/appvillis-com/agent-sync/main/plugins/agent-sync/skills/agent-sync/references/<file>`.
+`https://raw.githubusercontent.com/ssheleg/agent-sync/main/plugins/agent-sync/skills/agent-sync/references/<file>`.

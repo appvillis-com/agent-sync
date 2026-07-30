@@ -1,6 +1,6 @@
 # agent-sync
 
-[![CI](https://github.com/appvillis-com/agent-sync/actions/workflows/validate.yml/badge.svg)](https://github.com/appvillis-com/agent-sync/actions/workflows/validate.yml)
+[![CI](https://github.com/ssheleg/agent-sync/actions/workflows/validate.yml/badge.svg)](https://github.com/ssheleg/agent-sync/actions/workflows/validate.yml)
 [![npm](https://img.shields.io/npm/v/%40ssheleg%2Fagent-sync)](https://www.npmjs.com/package/@ssheleg/agent-sync)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -112,7 +112,7 @@ Restart Claude Code after installing, so it picks the plugin up.
 Track `main` from GitHub instead of the npm release:
 
 ```bash
-npx github:appvillis-com/agent-sync install
+npx github:ssheleg/agent-sync install
 ```
 
 Claude Code only, no skills CLI:
@@ -130,7 +130,7 @@ npx @ssheleg/agent-sync install --agent cursor,codex
 Or add the plugin by hand — the full `<name>@<name>` form is required:
 
 ```bash
-claude plugin marketplace add appvillis-com/agent-sync && claude plugin install agent-sync@agent-sync
+claude plugin marketplace add ssheleg/agent-sync && claude plugin install agent-sync@agent-sync
 ```
 
 </details>

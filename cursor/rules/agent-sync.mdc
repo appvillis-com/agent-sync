@@ -48,4 +48,4 @@ Before starting a task, run `reconcile` and resolve every divergence. After fini
     python3 "$SKILL/scripts/agent_sync.py" reconcile
     python3 "$SKILL/scripts/agent_sync.py" record "what you built" --decision DEC-0001
 
-Full documentation: https://github.com/appvillis-com/agent-sync
+Full documentation: https://github.com/ssheleg/agent-sync

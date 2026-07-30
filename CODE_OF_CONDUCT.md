@@ -31,7 +31,7 @@ messages, and anywhere you are representing the project.
 ## Enforcement
 
 Report through the contacts on [sshlg.me](https://sshlg.me), or privately via
-[GitHub Security Advisories](https://github.com/appvillis-com/agent-sync/security/advisories/new)
+[GitHub Security Advisories](https://github.com/ssheleg/agent-sync/security/advisories/new)
 if the report itself is sensitive. Reports are handled privately; the reporter's
 identity is not shared with the reported person.
 
