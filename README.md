@@ -361,8 +361,15 @@ Adding one: read
 
 ## Enforcement hooks
 
-Installed with the Claude Code plugin. Every hook exits immediately in projects without
-`.claude/agent-sync.json`, so installing globally changes nothing elsewhere.
+**This is the only part of the plugin that executes code on your machine.** Everything
+else — the skill, its references — is text an agent reads. Four bash scripts, bundled in
+the plugin and run by Claude Code on the events below, each with a timeout (15–20s) so a
+hung script cannot stall a session. Read them before installing: they are short, and
+[`SECURITY.md`](SECURITY.md) lists every path the install touches and why.
+
+Every hook exits immediately in projects without `.claude/agent-sync.json`, so installing
+globally changes nothing elsewhere. The `PreToolUse` guard can **deny** a tool call and
+never grants one that would otherwise be denied.
 
 | Hook | Runs | Effect |
 |---|---|---|

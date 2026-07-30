@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.4.2 — 2026-07-30
+
+### Changed
+- **The README's hook section now opens with what it actually is:** the only part
+  of this plugin that executes code on your machine, four bash scripts with 15-20s
+  timeouts, run by Claude Code on named events, with a pointer to `SECURITY.md`
+  for every path the install touches. The facts were already in `SECURITY.md`; the
+  README described the hooks' behavior without ever framing them as the security
+  surface a reader should check first.
+
+### Added
+- **`displayName`** ("Agent Sync") in both manifests.
+
 ## 1.4.1 — 2026-07-30
 
 ### Fixed
