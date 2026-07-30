@@ -3,17 +3,18 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## 1.3.7 — 2026-07-30
+## 1.3.8 — 2026-07-30
 
-The move in 1.3.6 was performed twice, by two agents in this repository at the same
-minute, and neither held a lease on it. Both renames were correct and nearly identical;
-this release carries what only one of them had, and is the release that moves the npm
-package page — 1.3.6 was tagged but never published.
+The 1.3.6 move was performed twice, by two agents in this repository within the same
+minute, and neither held a lease on it. Both renames were correct and nearly identical —
+the duplicated effort is the cost, and this project exists to make it visible. This
+release carries the two things only one of them had, and it is the release that moves the
+npm package page: 1.3.6 and 1.3.7 were tagged and never published.
 
 ### Changed
 - **`LICENSE` and the README footer read `ssheleg`.** The rename moved every address and
   every manifest identity, and left the copyright line naming the previous owner — the one
-  statement in the repository with legal weight.
+  statement in this repository with legal weight.
 
 ### Added
 - **`test/validate.py` fails a half-finished rename.** It derives the canonical slug from
@@ -25,15 +26,27 @@ package page — 1.3.6 was tagged but never published.
   fixture assembles its slug from parts, because written whole it makes the validator the
   file that fails the check.
 
+## 1.3.7 — 2026-07-30
+
+### Fixed
+- **The 1.3.6 note below claimed `raw.githubusercontent.com` does not follow a
+  repository transfer. It does** — the old owner's raw path returns 200 with the
+  current file, no redirect involved, because GitHub resolves a transferred
+  repository by identity on every surface (git, web and raw alike). Measured
+  after the move, which is what the claim should have been before it was
+  written. The paragraph is corrected in place so no install ships the wrong
+  fact; the reason to update the URLs is unchanged and stated accurately there.
+
+
 ## 1.3.6 — 2026-07-30
 
 ### Changed
 
 The repository moved from `appvillis-com/agent-sync` to **`ssheleg/agent-sync`**,
-joining the rest of the family under one owner. GitHub redirects the old path, so
-nothing breaks today — but a redirect is somebody else's promise, and two of these
-references do not follow one at all: `raw.githubusercontent.com` serves the schema
-and the reference files by path, not by repository identity.
+joining the rest of the family under one owner. GitHub keeps serving the old path
+on every surface, so nothing breaks today — but that only holds while the
+`appvillis-com` name is never re-registered, and a reference that depends on
+somebody else not taking a name is worth one commit to remove.
 
 - **Install paths** — `install.sh`, `bin/agent-sync.js` (the `npx github:…`
   fallback), and the README's npx and `claude plugin marketplace add` commands.
@@ -41,9 +54,10 @@ and the reference files by path, not by repository identity.
   `.claude-plugin/marketplace.json` (owner, homepage, repository, plugin author),
   `plugins/agent-sync/.claude-plugin/plugin.json`, and the `author` in the skill's
   front matter: `appvillis-com` → `ssheleg`.
-- **Raw URLs that no redirect covers** — `agent-sync.schema.json` `$id`, the
-  `$schema` in `agent-sync.example.json`, and the reference-loading fallback URL in
-  `SKILL.md`.
+- **Raw URLs** — `agent-sync.schema.json` `$id`, the `$schema` in
+  `agent-sync.example.json`, and the reference-loading fallback URL in `SKILL.md`.
+  A `$id` is an identifier as much as a location, so it should name the repository
+  that actually holds the schema.
 - Cursor rule, code of conduct and the security-advisory link in the issue-template
   config.
 
