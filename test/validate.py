@@ -366,6 +366,111 @@ def check_hooks_manifest() -> None:
                     err(f"hooks.json/{event}: command target {m.group(1)} does not exist")
 
 
+def _branch_fixture(project: str, script: Path) -> dict[str, str]:
+    """A repository with a roadmap row, a claim mapping, and a feature branch."""
+    env = {**os.environ, "AGENT_SYNC_RUN_ID": "validator"}
+    g = lambda *a: subprocess.run(["git", *a], cwd=project, capture_output=True, text=True)  # noqa: E731
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "v@e")
+    g("config", "user.name", "v")
+    (Path(project) / "ROADMAP.md").write_text(
+        "| Task | State |\n|---|---|\n| T-1 | todo |\n| T-2 | todo |\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "init")
+    subprocess.run([sys.executable, str(script), "init", "--backend", "fs"],
+                   cwd=project, env=env, capture_output=True)
+    cfg_path = Path(project) / ".claude" / "agent-sync.json"
+    cfg = json.loads(cfg_path.read_text())
+    cfg["claimTags"] = {"ROADMAP.md": {"mode": "cell", "cell": -1,
+                                       "held": "{prev} (claimed: {holder})"}}
+    cfg_path.write_text(json.dumps(cfg, indent=2))
+    g("add", "-A")
+    g("commit", "-q", "-m", "cfg")
+    return env
+
+
+def check_branch_claim_discipline() -> None:
+    """A claim is written through on the integration branch and nowhere else.
+
+    Committed on a feature branch, a claim is invisible to every other agent until the
+    merge — while turning the one shared file that exists to prevent collisions into a
+    file two branches both edit. The holder belongs in the coordination plane until the
+    work lands.
+    """
+    if not shutil.which("git"):
+        notes.append("git not found — branch discipline check skipped")
+        return
+    script = ROOT / "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py"
+    with tempfile.TemporaryDirectory() as project:
+        env = _branch_fixture(project, script)
+        roadmap = Path(project) / "ROADMAP.md"
+        before = roadmap.read_text()
+
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/x"], cwd=project,
+                       capture_output=True)
+        r = subprocess.run([sys.executable, str(script), "acquire", "T-1"], cwd=project,
+                           env=env, capture_output=True, text=True, timeout=60)
+        if roadmap.read_text() != before:
+            err("branch discipline: `acquire` wrote the claim into the roadmap while on a "
+                "feature branch — that edit is invisible until the merge and conflicts there")
+        if "coordination plane" not in r.stdout:
+            err("branch discipline: `acquire` on a branch does not say where the claim lives; "
+                "silence reads as 'no claim was recorded'")
+
+        subprocess.run([sys.executable, str(script), "release", "T-1"], cwd=project,
+                       env=env, capture_output=True)
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=project, capture_output=True)
+        subprocess.run([sys.executable, str(script), "acquire", "T-2"], cwd=project,
+                       env=env, capture_output=True, timeout=60)
+        if "claimed: " not in roadmap.read_text():
+            err("branch discipline: `acquire` on the integration branch did not write the "
+                "claim through — the rule is 'only there', not 'nowhere'")
+
+
+def check_merge_refuses_conflicts() -> None:
+    """A conflicting merge is refused before anything is touched, and leaves no record.
+
+    A merge that starts and aborts leaves the operator in a repository they did not ask
+    for, and a log entry for a merge that did not happen is worse than no log at all.
+    """
+    if not shutil.which("git"):
+        notes.append("git not found — merge refusal check skipped")
+        return
+    script = ROOT / "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py"
+    with tempfile.TemporaryDirectory() as project:
+        env = _branch_fixture(project, script)
+        g = lambda *a: subprocess.run(["git", *a], cwd=project, capture_output=True, text=True)  # noqa: E731
+        (Path(project) / "f.txt").write_text("base\n")
+        g("add", "-A")
+        g("commit", "-q", "-m", "base")
+        g("checkout", "-q", "-b", "feature/y")
+        (Path(project) / "f.txt").write_text("branch\n")
+        g("commit", "-q", "-am", "branch")
+        g("checkout", "-q", "main")
+        (Path(project) / "f.txt").write_text("integration\n")
+        g("commit", "-q", "-am", "integration")
+        g("checkout", "-q", "feature/y")
+
+        r = subprocess.run([sys.executable, str(script), "merge"], cwd=project, env=env,
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            err("merge: a conflicting merge reported success")
+        if "f.txt" not in r.stdout:
+            err("merge: the conflict was refused without naming the file that conflicts")
+        on = subprocess.run(["git", "branch", "--show-current"], cwd=project,
+                            capture_output=True, text=True).stdout.strip()
+        if on != "feature/y":
+            err(f"merge: refused, but left the repository on '{on}' instead of the branch "
+                "it was run from")
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=project,
+                               capture_output=True, text=True).stdout
+        if [l for l in dirty.splitlines() if ".agent-sync" not in l]:
+            err("merge: refused, but left the working tree dirty")
+        if (Path(project) / "docs" / "MERGES.md").exists():
+            err("merge: refused, and still wrote a merge-log entry for a merge that "
+                "never happened")
+
+
 def check_repo_slug_consistent() -> None:
     """One repository, one address. A rename that reaches some files and not others
     leaves the installer cloning one repo while the README, the badge and the schema
@@ -630,6 +735,8 @@ def main() -> int:
     check_hooks_noop_without_config()
     check_lease_report_agrees()
     check_repo_slug_consistent()
+    check_branch_claim_discipline()
+    check_merge_refuses_conflicts()
     check_lease_held_is_visible()
     check_release_refuses_other_runs()
 
@@ -686,6 +793,17 @@ def self_test() -> int:
                                  lambda t: re.sub(r"const REPO = '[^']+'",
                                                   "const REPO = '" + "previous-owner"
                                                   + "/agent-" + "sync'", t)),
+        # The claim gate removed: acquire writes the roadmap from whatever branch it is on.
+        "claim written from a branch": (
+            "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py",
+            lambda t: t.replace("if holder is not None and not self.on_integration_branch:",
+                                "if False:")),
+        # The conflict preflight neutered: merge would start, hit the conflict and abort,
+        # leaving the operator somewhere they did not ask to be.
+        "merge without a conflict check": (
+            "plugins/agent-sync/skills/agent-sync/scripts/agent_sync.py",
+            lambda t: t.replace("    conflicts = merge_conflicts(upstream, branch)",
+                                "    conflicts = []")),
         "stray SKILL.md": (None, None),
     }
     original_root = ROOT

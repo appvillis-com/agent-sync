@@ -32,12 +32,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.3.8"
+VERSION = "1.4.0"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
 STATE_DIR = Path(".agent-sync")
 GENERATED_MARKER = "<!-- agent-sync:generated"
+MERGE_LOG_MARKER = "<!-- agent-sync:merge-log -->"
+DEFAULT_MERGE_LOG = "docs/MERGES.md"
+DEFAULT_MERGE_RETENTION = 7
 
 # What a won lease is actually worth, in one place. Six surfaces used to phrase this
 # independently and two of them named the knowledge base as the authority — a role it
@@ -117,6 +120,53 @@ def project_root() -> Path:
 
 def head_sha() -> str:
     return git("rev-parse", "--short", "HEAD") or "unknown"
+
+
+def current_branch() -> str:
+    return git("rev-parse", "--abbrev-ref", "HEAD") or ""
+
+
+def default_branch() -> str:
+    """The branch everything integrates into. Asked of the repository, never assumed."""
+    ref = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    if ref:
+        return ref.rsplit("/", 1)[-1]
+    for cand in ("main", "master"):
+        if git("rev-parse", "--verify", "--quiet", cand):
+            return cand
+    return "main"
+
+
+def merge_conflicts(target: str, branch: str) -> list[str]:
+    """Files that would conflict, decided WITHOUT touching the working tree.
+
+    A merge that starts and then aborts still leaves the operator in a repository they
+    did not expect. `git merge-tree` answers the same question in memory. Modern git
+    (2.38+) takes --write-tree and reports conflicted paths; older git prints a diff
+    where a conflict shows up as marker lines, so both forms are read here.
+    """
+    r = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only", target, branch],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return []
+    if r.returncode == 1:
+        # Layout: tree oid, the conflicted paths, a blank line, then git's own prose
+        # ("Auto-merging …", "CONFLICT (content) …"). Only the paths are the answer;
+        # printing the prose as if it were a filename makes the report untrustworthy.
+        paths: list[str] = []
+        for line in r.stdout.splitlines()[1:]:
+            if not line.strip():
+                break
+            paths.append(line)
+        return paths
+
+    base = git("merge-base", target, branch)
+    if not base:
+        return ["(cannot determine a merge base — unrelated histories)"]
+    old = subprocess.run(["git", "merge-tree", base, target, branch],
+                         capture_output=True, text=True)
+    return ["(conflicting hunks — this git is too old to name the files)"] \
+        if "<<<<<<<" in old.stdout else []
 
 
 def repo_name() -> str:
@@ -1170,6 +1220,98 @@ class Sync:
             raw = raw[:-1]
         return raw[1:].split("|")
 
+    # -- branch discipline -------------------------------------------------
+
+    @property
+    def integration_branch(self) -> str:
+        """Where work lands. Configured, or asked of the repository — never assumed."""
+        return self.cfg.get("integrationBranch") or default_branch()
+
+    @property
+    def on_integration_branch(self) -> bool:
+        return current_branch() == self.integration_branch
+
+    def merge_log(self) -> tuple[Path, int]:
+        spec = self.cfg.get("mergeLog") or {}
+        return (self.root / (spec.get("file") or DEFAULT_MERGE_LOG),
+                int(spec.get("retentionDays") or DEFAULT_MERGE_RETENTION))
+
+    def merge_log_append(self, entry: dict[str, str] | None = None) -> Path:
+        """Append one merge, then compact anything past the retention window.
+
+        Two audiences, one file. An agent that just arrived needs the last few days in
+        enough detail to know what changed under it; nobody needs that detail from three
+        weeks ago, and a log that only grows stops being read — which is the same as not
+        having one. Compaction happens on write, so it needs no cron and no second command.
+        """
+        path, retention = self.merge_log()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        detailed, compacted = self._read_merge_log(path)
+
+        if entry is not None:
+            detailed.insert(0, entry)
+        cutoff = time.time() - retention * 86400
+        keep, aged = [], []
+        for e in detailed:
+            (keep if parse_iso(e.get("ts", "")) >= cutoff else aged).append(e)
+        compacted = [self._one_line(e) for e in aged] + compacted
+
+        path.write_text(self._render_merge_log(keep, compacted, retention))
+        return path
+
+    @staticmethod
+    def _one_line(e: dict[str, str]) -> str:
+        return (f"- {e.get('ts', '')[:10]} · `{e.get('key', '—')}` · {e.get('branch', '?')} → "
+                f"{e.get('target', '?')} · `{e.get('sha', '?')}` · {e.get('summary', '')}".rstrip())
+
+    @staticmethod
+    def _read_merge_log(path: Path) -> tuple[list[dict[str, str]], list[str]]:
+        if not path.exists():
+            return [], []
+        text = path.read_text()
+        body, _, tail = text.partition("\n## Compacted\n")
+        compacted = [l for l in tail.splitlines() if l.startswith("- ")]
+        entries: list[dict[str, str]] = []
+        for block in body.split("\n### ")[1:]:
+            lines = block.splitlines()
+            head = lines[0]
+            e = {"ts": "", "key": "—", "branch": "?", "target": "?", "sha": "?",
+                 "run": "?", "files": "?", "conflicts": "none", "summary": ""}
+            parts = [p.strip() for p in head.split("·")]
+            if parts:
+                e["ts"] = parts[0]
+            if len(parts) > 1:
+                e["key"] = parts[1].strip("`")
+            if len(parts) > 2 and "→" in parts[2]:
+                e["branch"], _, e["target"] = (x.strip() for x in parts[2].partition("→"))
+            if len(parts) > 3:
+                e["sha"] = parts[3].strip("`")
+            for l in lines[1:]:
+                for field in ("run", "files", "conflicts", "summary"):
+                    if l.startswith(f"- {field}: "):
+                        e[field] = l.split(": ", 1)[1]
+            entries.append(e)
+        return entries, compacted
+
+    @staticmethod
+    def _render_merge_log(entries: list[dict[str, str]], compacted: list[str],
+                          retention: int) -> str:
+        out = [MERGE_LOG_MARKER, "", "# Merge log", "",
+               f"Written by `agent_sync.py merge`. Entries newer than {retention} days keep "
+               "their detail; older ones are compacted to one line each on the next write. "
+               "Read it before starting work: it is the shortest answer to *what landed while "
+               "I was on my branch*.", ""]
+        for e in entries:
+            out += [f"### {e['ts']} · `{e['key']}` · {e['branch']} → {e['target']} · `{e['sha']}`",
+                    f"- run: {e['run']}",
+                    f"- files: {e['files']}",
+                    f"- conflicts: {e['conflicts']}",
+                    f"- summary: {e['summary']}", ""]
+        # The placeholder deliberately does not start with "- ": the reader counts list
+        # items, and an empty log that reports one compacted entry is a lie about history.
+        out += ["## Compacted", ""] + (compacted or ["_nothing older than the window yet_"])
+        return "\n".join(out) + "\n"
+
     def write_claim(self, key: str, holder: str | None) -> list[str]:
         """Write the claim through to git, or restore it. Surgical and reversible.
 
@@ -1178,6 +1320,17 @@ class Sync:
         exists to prevent. The previous cell text is stored in the lock file, so release
         restores what was there rather than an assumed default.
         """
+        # A claim is a statement about the integration branch, so it is only written
+        # there. Committed on a feature branch it is invisible to everyone until the
+        # merge — and it turns the shared roadmap into a file two branches both edit,
+        # which is a merge conflict on the one file that exists to prevent collisions.
+        # While the work is on a branch the holder lives in the coordination plane,
+        # where `status` and the board already read it.
+        if holder is not None and not self.on_integration_branch:
+            return [f"claim for `{key}` left in the coordination plane — this run is on "
+                    f"'{current_branch()}', not {self.integration_branch}. `status` shows the "
+                    f"holder to every agent; `merge` records the outcome."]
+
         notes: list[str] = []
         for path, spec in self._claim_targets(key):
             if spec.get("mode") != "cell":
@@ -1855,6 +2008,7 @@ def default_config(backend: str) -> dict[str, Any]:
         "claimTags": {},
         "gates": [],
         "mirror": {"enabled": False, "sources": []},
+        "mergeLog": {"file": DEFAULT_MERGE_LOG, "retentionDays": DEFAULT_MERGE_RETENTION},
     }
 
 
@@ -2829,6 +2983,120 @@ def cmd_whoami(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_merge(args: argparse.Namespace) -> int:
+    """Land a branch on the integration branch, and leave a record of what landed.
+
+    Every check here runs *before* anything is touched, because a merge that starts and
+    then aborts leaves the operator somewhere they did not ask to be. The conflict answer
+    comes from `git merge-tree`, which computes it in memory.
+    """
+    s = Sync()
+    branch = current_branch()
+    target = args.into or s.integration_branch
+
+    if not branch or branch == "HEAD":
+        raise Fail("detached HEAD — check out the branch you want to merge")
+    if branch == target:
+        raise Fail(f"already on {target} — there is no branch to merge. Work happens on a "
+                   f"branch so the integration branch stays somebody else's stable base")
+    dirty = [l for l in (git("status", "--porcelain") or "").splitlines()
+             if l and STATE_DIR.name not in l]
+    if dirty:
+        raise Fail(f"working tree is not clean ({len(dirty)} path(s)) — commit or stash first; "
+                   "a merge cannot tell your uncommitted work from the branch's")
+
+    git("fetch", "--quiet", "origin", target)
+    upstream = f"origin/{target}" if git("rev-parse", "--verify", "--quiet", f"origin/{target}") else target
+    behind = git("rev-list", "--count", f"{branch}..{upstream}")
+    changed = [l for l in (git("diff", "--name-only", f"{upstream}...{branch}") or "").splitlines() if l]
+    stat = git("diff", "--shortstat", f"{upstream}...{branch}") or "no changes"
+
+    print(f"{branch} → {target}")
+    print(f"  files changed  : {len(changed)}  ({stat.strip()})")
+    print(f"  {target} moved  : {behind or '0'} commit(s) since this branch started")
+
+    conflicts = merge_conflicts(upstream, branch)
+    if conflicts:
+        print("\n✗ this merge conflicts. Nothing was touched.")
+        for c in conflicts[:20]:
+            print(f"    · {c}")
+        print(f"\nNEXT: rebase or merge {target} into {branch} in your own branch, resolve there,")
+        print("  then run this again. The integration branch never carries a resolution nobody reviewed.")
+        return 1
+    print("  conflicts      : none")
+
+    others = {k: v for k, v in s.all_holders().items() if v != s.rid}
+    if others:
+        print("\n  other runs hold leases right now:")
+        for k, v in sorted(others.items()):
+            print(f"    · {v} holds {k}")
+        print("  Their work is not in this diff. If it touches the same files, they merge into "
+              "what you are about to land.")
+
+    if args.dry_run:
+        print("\n(dry run — nothing merged)")
+        return 0
+
+    if git("checkout", target) == "" and current_branch() != target:
+        raise Fail(f"could not check out {target}")
+    msg = args.message or f"Merge {branch}" + (f" — {args.key}" if args.key else "")
+    r = subprocess.run(["git", "merge", "--no-ff", "-m", msg, branch],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        subprocess.run(["git", "merge", "--abort"], capture_output=True)
+        git("checkout", branch)
+        raise Fail(f"merge failed and was aborted; you are back on {branch}\n"
+                   f"  {(r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else ''}")
+    sha = head_sha()
+    print(f"\n✓ merged as {sha}")
+
+    path = s.merge_log_append({
+        "ts": now_iso(), "key": args.key or "—", "branch": branch, "target": target,
+        "sha": sha, "run": s.rid, "files": f"{len(changed)} ({stat.strip()})",
+        "conflicts": "none", "summary": args.summary or "(no summary given)",
+    })
+    rel_log = path.relative_to(s.root)
+    git("add", str(rel_log))
+    subprocess.run(["git", "commit", "--quiet", "-m",
+                    f"docs(merges): record {branch} → {target}"], capture_output=True)
+    print(f"✓ recorded in {rel_log}")
+
+    for key in (s.held() or []):
+        s.release(key)
+        print(f"✓ released {key}")
+
+    if args.push:
+        out = subprocess.run(["git", "push", "origin", target], capture_output=True, text=True)
+        print(f"✓ pushed {target}" if out.returncode == 0
+              else f"✗ push failed: {(out.stderr or '').strip().splitlines()[-1:]}")
+    else:
+        print(f"\nNEXT: push {target}, or run `finish` to check every repository first.")
+    return 0
+
+
+def cmd_merges(args: argparse.Namespace) -> int:
+    """What landed while you were on your branch."""
+    s = Sync()
+    path, retention = s.merge_log()
+    if not path.exists():
+        print(f"no merge log yet at {path.relative_to(s.root)} — `merge` writes one")
+        return 0
+    if args.compact:
+        s.merge_log_append()          # same pass the writer runs, without a new entry
+        print("compacted anything past the retention window")
+    entries, compacted = s._read_merge_log(path)
+    print(f"{path.relative_to(s.root)} — {len(entries)} detailed (last {retention} days), "
+          f"{len(compacted)} compacted\n")
+    for e in (entries if args.all else entries[:args.limit]):
+        print(f"{e['ts']} · {e['key']} · {e['branch']} → {e['target']} · {e['sha']}")
+        print(f"    {e['summary']}")
+    if args.all and compacted:
+        print("\nolder:")
+        for line in compacted[:args.limit if not args.all else len(compacted)]:
+            print(f"  {line[2:]}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent_sync.py", description=__doc__.splitlines()[0])
     p.add_argument("--version", action="version", version=VERSION)
@@ -2849,6 +3117,19 @@ def build_parser() -> argparse.ArgumentParser:
     fi = sub.add_parser("finish", help="is the work finished — every repo clean, pushed and pointed at; no lease held")
     fi.add_argument("--gates", action="store_true", help="also run the project's declared gate commands")
     fi.set_defaults(fn=cmd_finish)
+    mg = sub.add_parser("merge", help="land this branch on the integration branch, and record it")
+    mg.add_argument("--into", help="integration branch (default: config, else the repo's own)")
+    mg.add_argument("--key", help="the task id this branch delivered")
+    mg.add_argument("--summary", help="one line for the merge log — what landed")
+    mg.add_argument("--message", help="merge commit message")
+    mg.add_argument("--push", action="store_true", help="push the integration branch afterwards")
+    mg.add_argument("--dry-run", action="store_true", help="check conflicts and stop")
+    mg.set_defaults(fn=cmd_merge)
+    ml = sub.add_parser("merges", help="what landed while you were on your branch")
+    ml.add_argument("--all", action="store_true", help="include the compacted tail")
+    ml.add_argument("--limit", type=int, default=10, help="how many detailed entries to print")
+    ml.add_argument("--compact", action="store_true", help="run the compaction pass now")
+    ml.set_defaults(fn=cmd_merges)
     sc = sub.add_parser("scaffold", help="create the missing documentation architecture (never overwrites)")
     sc.add_argument("--docs-dir", action="store_true", help="put the register under docs/ even if it does not exist yet")
     sc.add_argument("--full", action="store_true",

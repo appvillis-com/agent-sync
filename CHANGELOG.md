@@ -3,6 +3,60 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.4.0 — 2026-07-30
+
+### Work happens on a branch, and the integration branch stays somebody else's stable base
+
+Two agents renamed this repository the same minute yesterday, both committing straight to
+`main`. The second push was rejected — after the work was already duplicated. Nothing in
+the tool said where work should happen, so both did the obvious thing.
+
+- **`acquire` writes the claim through only on the integration branch.** On any other
+  branch it says so and writes nothing: a claim committed to a branch is invisible to
+  every other agent until the merge, and it turns the shared roadmap into a file two
+  branches both edit — a conflict on the one file that exists to prevent collisions. The
+  holder lives in the coordination plane, where `status` already shows it to everyone
+  without anyone fetching a branch.
+- **`integrationBranch`** in the config, or the repository's own default branch when unset.
+  Asked of the repository, never assumed.
+
+### `merge` — land a branch, with every check before anything is touched
+
+`merge` refuses a detached HEAD, the integration branch itself and a dirty tree; fetches
+the target and reports how far it moved; computes conflicts with **`git merge-tree`, in
+memory**; lists every other run's live lease; merges `--no-ff`; records the merge; and
+releases every lease this run holds. On conflict it names the files, changes nothing and
+exits non-zero — a merge that starts and aborts leaves the operator in a repository they
+did not ask for, and a resolution nobody reviewed does not belong on the integration
+branch. `--dry-run` stops after the checks, `--push` pushes afterwards.
+
+### `merges` — what landed while you were on your branch
+
+A merge log at `docs/MERGES.md` (`mergeLog.file`), written by `merge`. It answers what
+`git log` cannot without reading every commit and what a changelog only covers once
+released: *what landed while I was away, and was any of it near my work.*
+
+**Compaction happens on write.** Entries inside `mergeLog.retentionDays` (7) keep their
+detail; older ones fold to one line each on the next merge. No cron, no second command,
+and no log that grows until people stop reading it — which is the same as not having one.
+
+### Added
+- `test/validate.py` exercises both rules against throwaway repositories: `acquire` on a
+  feature branch must leave the roadmap untouched **and** say where the claim lives, while
+  on the integration branch it must still write through; a conflicting `merge` must exit
+  non-zero, name the conflicting file, leave the checkout on the original branch with a
+  clean tree, and write **no** log entry for a merge that did not happen. Both have
+  self-test fixtures that remove the guard and confirm the check goes red.
+- `references/branching.md`, and the doctrine in the skill body.
+
+## 1.3.9 — 2026-07-30
+
+### Changed
+- `license: MIT` added to the `marketplace.json` plugin entry. The front matter
+  already declared it — this repo was the only one in the family that did — but
+  the plugin listing, which is what a user reads before installing, did not.
+
+
 ## 1.3.8 — 2026-07-30
 
 The 1.3.6 move was performed twice, by two agents in this repository within the same

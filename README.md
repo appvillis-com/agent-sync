@@ -247,16 +247,53 @@ python3 "$SKILL_DIR/scripts/agent_sync.py" <command>
 | `guard <path>` | May this run write that path? Exit 0 = yes, 2 = no |
 | `board` | Regenerate the read-only board and the mirror from git |
 | `whoami` | Print this run's id and its held leases |
+| `merge` | Land this branch on the integration branch: conflicts checked first, merge log written, lease released |
+| `merges` | What landed while you were on your branch |
 
 The shape that matters:
 
 ```
-acquire → do the work → release
+acquire → work on a branch → merge
 ```
 
-Never skip `release`, including when the work failed. An abandoned lease blocks the task
-until its TTL expires, and the next agent cannot tell "in progress" from "crashed an hour
-ago". A lease is a promise to come back.
+Never skip the last step, including when the work failed. An abandoned lease blocks the
+task until its TTL expires, and the next agent cannot tell "in progress" from "crashed an
+hour ago". A lease is a promise to come back. `merge` releases for you; without a branch,
+`release` by hand.
+
+### Work on a branch, land it with `merge`
+
+The integration branch is somebody else's stable base, so nothing about work in flight is
+committed there. `acquire` writes the claim through to the roadmap **only** on the
+integration branch; on any other branch it says so and keeps the holder in the coordination
+plane, where `status` already shows it to every agent — no one has to fetch your branch to
+see who has what, and the shared roadmap does not become the file every branch edits.
+
+```bash
+python3 "$SKILL_DIR/scripts/agent_sync.py" merge --key ASC-072 --summary "what landed"
+```
+
+Conflicts are computed with `git merge-tree` **before anything is touched** — on conflict
+it names the files, changes nothing and exits non-zero, so a resolution nobody reviewed
+never reaches the integration branch. Then it merges `--no-ff`, records the merge, and
+releases every lease this run holds. `--dry-run` stops after the checks; `--push` pushes
+afterwards.
+
+**The merge log** — `docs/MERGES.md`, configurable via `mergeLog` — answers the question an
+agent coming back from a branch cannot answer from `git log` alone: *what landed while I
+was away, and was any of it near my work.* Entries inside `retentionDays` (7) keep their
+detail; older ones are folded to one line each **on the next write**, so the file stays
+readable without a cron job.
+
+```bash
+python3 "$SKILL_DIR/scripts/agent_sync.py" merges          # recent detail
+python3 "$SKILL_DIR/scripts/agent_sync.py" merges --all    # plus the compacted tail
+```
+
+This is the flow for agents sharing one repository. A project that reviews through pull
+requests keeps doing that — `merge` is then the wrong command, and `finish` is still the
+right one. Full doctrine:
+[`references/branching.md`](plugins/agent-sync/skills/agent-sync/references/branching.md).
 
 **The lease is not the claim.** The lease says who holds the task *now* and expires; the
 durable claim is the tag in git (`[name]`, `todo (claimed: <role>)`). `acquire` writes
@@ -279,6 +316,8 @@ that tag through and `release` clears it, so one fact keeps one home.
 | `claimTags` | file → the durable claim tag `acquire`/`release` writes through |
 | `gates` | commands the pipeline stages run as gates |
 | `mirror` | which git files are rendered into the read-only mirror |
+| `integrationBranch` | where work lands and the only branch a claim is written on (default: the repo's own) |
+| `mergeLog` | `file` and `retentionDays` for the merge log (default `docs/MERGES.md`, 7) |
 
 `.env.agent-sync` — gitignored, mode 600:
 
@@ -405,6 +444,7 @@ agent loads on their own trigger rather than by default:
 | [`two-sources.md`](plugins/agent-sync/skills/agent-sync/references/two-sources.md) | before the first reconcile, or when deciding where a document belongs |
 | [`earned-rules.md`](plugins/agent-sync/skills/agent-sync/references/earned-rules.md) | why identity is resolved the way it is, and why `finish` exists — the two failures that produced both |
 | [`roadmap.md`](plugins/agent-sync/skills/agent-sync/references/roadmap.md) | configuring `claimTags`, taking or closing a task, or re-planning a board |
+| [`branching.md`](plugins/agent-sync/skills/agent-sync/references/branching.md) | starting work that will produce commits, merging a branch, or asking what landed while you were away |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md). Everyone
 taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
