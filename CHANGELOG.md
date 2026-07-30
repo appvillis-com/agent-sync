@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.4.1 — 2026-07-30
+
+### Fixed
+- **`homepage` and `repository` sat at the top level of `marketplace.json`,
+  where Claude Code does not recognize them.** They are plugin-entry fields;
+  moved there, so the values reach the plugin listing instead of being ignored.
+  This plugin's `argument-hint` was already quoted — the only one in the family
+  that was.
+
+### Added
+- `claude plugin validate --strict` runs in CI against both the plugin and the
+  marketplace manifest: the upstream schema, next to this repo's own validator.
+
 ## 1.4.0 — 2026-07-30
 
 ### Work happens on a branch, and the integration branch stays somebody else's stable base

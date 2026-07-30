@@ -5,17 +5,17 @@
     "url": "https://github.com/ssheleg"
   },
   "description": "Let concurrent coding agents share one project without colliding \u2014 leases, ID reservation, a run journal and a generated board, over a pluggable knowledge cloud.",
-  "homepage": "https://github.com/ssheleg/agent-sync",
-  "repository": "https://github.com/ssheleg/agent-sync",
   "plugins": [
     {
       "name": "agent-sync",
       "source": "./plugins/agent-sync",
       "description": "Coordination layer for multi-agent repositories. Gives task-pipeline runs a lease authority with TTL, race-free ID reservation, a cross-repo signal feed, an append-only run journal and a machine-generated read-only board, all decided by replaying one append-only log so no backend needs compare-and-swap. The knowledge backend is a pluggable adapter (Outline, filesystem) declaring its own capabilities, and degrades honestly to git-file leases when it cannot be the lease authority. Ships Claude Code hooks that deny edits to guarded registry files without a live lease.",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "author": {
         "name": "ssheleg"
       },
+      "repository": "https://github.com/ssheleg/agent-sync",
+      "homepage": "https://github.com/ssheleg/agent-sync",
       "license": "MIT",
       "keywords": [
         "multi-agent",

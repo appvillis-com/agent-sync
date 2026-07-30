@@ -45,3 +45,12 @@ jobs:
           found=$(find . -name SKILL.md -not -path './.git/*' \
             -not -regex './plugins/[^/]*/skills/[^/]*/SKILL.md' | head)
           [ -z "$found" ] || { echo "stray SKILL.md: $found"; exit 1; }
+      - name: Official Claude Code conformance (plugin + marketplace, strict)
+        run: |
+          set -eu
+          # The repo's own validator enforces house rules; this one is the
+          # upstream spec. --strict fails on unrecognized manifest fields and on
+          # front matter that silently drops at runtime -- both were real here.
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate . --strict
+          claude plugin validate plugins/agent-sync --strict
