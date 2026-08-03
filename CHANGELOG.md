@@ -3,6 +3,30 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.4.3 — 2026-08-03
+
+### Fixed
+
+- **The `pipeline.json` example did not validate against the schema it cited.** It
+  claimed `task-pipeline`'s `pipeline.schema.json` permitted it while carrying a
+  string `id`, a `title` where the schema says `name`, and no `state` at all — which
+  is required. Anyone who copied it got a config `task-pipeline` rejects. The example
+  is now checked against that schema.
+- **Gate texts stated only this plugin's half.** Each `check` read as if it replaced
+  the stage's own criteria, so a host that copied the block silently dropped them —
+  stage 9 lost the propagation sweep and the documentation gate, stage 10 lost the
+  ladder walk and the evidence rule. Every `check` is now written as
+  *`<the stage's own criteria>` **AND** agent-sync's clause*.
+- **Stage 9 pointed at the wrong doctrine.** `task-pipeline:artifacts` is the
+  artifact-layout reference; that stage runs on `task-pipeline:documentation` and
+  `task-pipeline:gates` since the documentation track landed.
+- **`guardedFiles` did not cover what the pipeline now creates.** `docs/DOCMAP.md`
+  holds a project's registers, propagation matrix and ratchet floors, and
+  `docs/superpowers/retro.md` is capped at ten standing instructions — so a
+  concurrent write there drops a lesson instead of conflicting visibly. Both are
+  guarded, with the reasoning in `references/pipeline-binding.md` because the config
+  schema keeps `agent-sync.json` to known keys.
+
 ## 1.4.2 — 2026-07-30
 
 ### Changed
