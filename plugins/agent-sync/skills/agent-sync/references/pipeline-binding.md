@@ -24,29 +24,64 @@
 ## pipeline.json
 
 `task-pipeline`'s `pipeline.schema.json` already permits this; nothing is forked.
-Add `agent-sync` to `skills[]` on the six stages that call it:
+Add `agent-sync` to `skills[]` on the six stages that call it, and append its
+clause to each of those stages' existing `gate.check`:
 
 ```json
 {
   "stages": [
-    { "id": "0",  "title": "Intake grill",  "skills": ["task-pipeline:grill", "agent-sync"],
-      "gate": { "type": "manual", "check": "brief committed and lease held" } },
-    { "id": "3",  "title": "Spec",          "skills": ["task-pipeline:spec", "agent-sync"],
-      "gate": { "type": "auto",   "check": "every id in the spec was reserved" } },
-    { "id": "4",  "title": "Plan",          "skills": ["task-pipeline:planning", "agent-sync"],
-      "gate": { "type": "auto",   "check": "no two parallel tasks write one file" } },
-    { "id": "5",  "title": "Dev",           "skills": ["task-pipeline:build", "agent-sync"],
-      "gate": { "type": "auto",   "check": "lease live and submodule pointers current" } },
-    { "id": "9",  "title": "Docs + wiki",   "skills": ["task-pipeline:artifacts", "agent-sync"],
-      "gate": { "type": "auto",   "check": "board regenerated and no mirror drift" } },
-    { "id": "10", "title": "Acceptance",    "skills": ["task-pipeline:acceptance", "agent-sync"],
-      "gate": { "type": "auto",   "check": "every lease released and every claim tag written through" } }
+    { "id": 0,  "state": "intake",      "name": "Intake grill",
+      "skills": ["task-pipeline:grill", "agent-sync"],
+      "gate": { "type": "manual", "check": "<the stage's own criteria> AND the lease for this task is held before the brief is committed" } },
+    { "id": 3,  "state": "spec",        "name": "Spec",
+      "skills": ["task-pipeline:spec", "agent-sync"],
+      "gate": { "type": "manual", "check": "<the stage's own criteria> AND every id the spec writes was reserved first" } },
+    { "id": 4,  "state": "plan",        "name": "Plan",
+      "skills": ["task-pipeline:planning", "agent-sync"],
+      "gate": { "type": "auto",   "check": "<the stage's own criteria> AND no two parallel tasks write one file" } },
+    { "id": 5,  "state": "dev",         "name": "Dev",
+      "skills": ["task-pipeline:build", "agent-sync"],
+      "gate": { "type": "auto",   "check": "<the stage's own criteria> AND the lease is live and submodule pointers are current" } },
+    { "id": 9,  "state": "docs-wiki",   "name": "Docs + wiki",
+      "skills": ["task-pipeline:documentation", "task-pipeline:gates", "agent-sync"],
+      "gate": { "type": "auto",   "check": "<the stage's own criteria — the propagation sweep and a green documentation gate with its ratchets printed> AND the board is regenerated with no mirror drift" } },
+    { "id": 10, "state": "acceptance",  "name": "Acceptance",
+      "skills": ["task-pipeline:acceptance", "agent-sync"],
+      "gate": { "type": "manual", "check": "<the stage's own criteria> AND every lease is released and every claim tag written through" } }
   ]
 }
 ```
 
+**Three things in that JSON are contract, not style.** `state` is **required** by
+`pipeline.schema.json`, `id` is an **integer**, and the human label is `name` — not
+`title`. This example carried `"id": "0"` with a `title` and no `state` until
+2026-08-03, while claiming the schema permitted it; anyone who copied it got a config
+`task-pipeline` rejects.
+
+**And the gate text EXTENDS, never replaces.** Each `check` above is
+*`<the stage's own criteria>` **AND** agent-sync's clause* — written out that way on
+purpose. An earlier version of this file stated only agent-sync's half, so a host
+that copied it silently dropped the stage's real gate: stage 9 lost the propagation
+sweep and the documentation gate, stage 10 lost the ladder walk and the evidence
+rule.
+
 Stages 1, 2, 6, 7 and 8 keep their own `skills[]`; `agent-sync` only journals there,
 which needs no wiring.
+
+## What must be guarded
+
+`guardedFiles` is every shared file two agents could write in the same minute — and
+since the pipeline's documentation track it is longer than the registers:
+
+| File | Why it is shared state |
+|---|---|
+| the decision register (`docs/DECISIONS.md` or `docs/adr/`) | append-only; a concurrent write loses an entry |
+| `docs/OPEN_QUESTIONS.md`, `docs/ROADMAP.md` | the same |
+| **`docs/DOCMAP.md`** | seeded into every project the pipeline touches; holds the registers, the propagation matrix and the ratchet floors. Losing it loses the map |
+| **`docs/superpowers/retro.md`** | capped at ten standing instructions, so a concurrent write silently **drops a lesson** instead of conflicting visibly |
+
+The schema keeps `agent-sync.json` to known keys, which is why this reasoning lives
+here and not as a comment in the config.
 
 ## Preflight
 

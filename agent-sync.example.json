@@ -17,7 +17,9 @@
   "guardedFiles": [
     "docs/DECISIONS.md",
     "docs/OPEN_QUESTIONS.md",
-    "docs/ROADMAP.md"
+    "docs/ROADMAP.md",
+    "docs/DOCMAP.md",
+    "docs/superpowers/retro.md"
   ],
   "claimTags": {
     "docs/ROADMAP.md": {
