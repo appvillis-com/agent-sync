@@ -38,7 +38,10 @@
   "bugs": {
     "url": "https://github.com/ssheleg/agent-sync/issues"
   },
-  "author": "ssheleg",
+  "author": {
+    "name": "ssheleg",
+    "url": "https://x.com/sshlg93"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=18"

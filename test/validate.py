@@ -30,6 +30,7 @@ ALLOWED_HOSTS = {
     "code.claude.com", "docs.claude.com", "agentskills.io", "www.agentskills.io",
     "www.getoutline.com", "getoutline.com", "app.getoutline.com",
     "json-schema.org", "npmjs.com", "www.npmjs.com", "img.shields.io",
+    "x.com", "sshlg.me", "t.me",
     "localhost", "127.0.0.1", "example.com", "wiki.example.com",
 }
 

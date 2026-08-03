@@ -461,6 +461,13 @@ Security reports: [SECURITY.md](SECURITY.md).
 bundle, which installs the whole family for Claude Code, Cursor, Codex and 70+
 other agents with one command.
 
+## Author
+
+Built by ssheleg — [sshlg.me](https://sshlg.me)
+
+- X / Twitter — [@sshlg93](https://x.com/sshlg93)
+- Telegram — [@sshlg](https://t.me/sshlg)
+
 ## License
 
 MIT © ssheleg
