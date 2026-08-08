@@ -1,3 +1,30 @@
+## v1.5.0
+
+### The commit guard was blind to `git -C <dir> commit`, and to submodules
+
+Two defects, and the second is why the first went unnoticed.
+
+**The test was a contiguous substring.** `case "$cmd" in *"git commit"*)` — and `git -C <dir> commit`
+does not contain the string `git commit`. Every commit made that way skipped the guard entirely, in
+any repository, submodule or not.
+
+**The repository was hardcoded to `CLAUDE_PROJECT_DIR`.** So even a bare `git commit` inside a
+submodule read the *umbrella's* index, found it empty, and passed: the staged files live in the
+submodule's index.
+
+Together they meant a full day of commits to guarded registers went unchecked, on 2026-08-07, while
+the Edit-tool half of the same hook refused correctly the whole time — so the protection looked
+present and was measured as present by anyone who tested it with the Edit tool.
+
+The command is now tokenised in python rather than globbed in shell: `-C`, `-c` and `--namespace`
+are consumed with their arguments, `cd <dir> &&` is honoured, each `&&`/`;`/`||` segment is examined,
+and the guard runs **from** the resolved repository — `agent_sync.py` resolves the project from
+`git rev-parse --show-toplevel` of its cwd, so a submodule gets its own `guardedFiles`.
+
+Proven against the previous version on all three forms: `git -C <sub> commit` and
+`cd <sub> && git commit` go from `rc=0` to `rc=2`, and `git log --grep=commit` stays `rc=0` — the
+tokeniser exists so that one does not become a false positive.
+
 # Changelog
 
 All notable changes to this project are documented here.
