@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 CONFIG_PATH = Path(".claude/agent-sync.json")
 ENV_FILE = Path(".env.agent-sync")
@@ -1343,6 +1343,20 @@ class Sync:
             rel = path.relative_to(self.root)
             if not hits:
                 continue
+            # On RELEASE the id is the wrong key to search by. `acquire` wrote a marker naming
+            # this run; by the time the work is done the id may appear in rows that did not exist
+            # when it was taken — which is what happened on 2026-08-07, when a task id gained a
+            # second mention mid-run and release refused, leaving `(claimed: r-…)` in a status cell
+            # permanently: a live claim for a lease nobody holds, which is worse than no claim.
+            # The marker is unambiguous however many rows mention the id, so narrow by it first.
+            if holder is None and len(hits) > 1:
+                marker = ((spec.get("held") or "{prev} (claimed: {holder})")
+                          .replace("{prev}", "").replace("{holder}", self.rid).strip())
+                if marker:
+                    narrowed = [i for i in hits if marker in lines[i]]
+                    if len(narrowed) == 1:
+                        hits = narrowed
+
             if len(hits) > 1:
                 notes.append(f"{rel}: `{key}` appears in {len(hits)} table rows — refusing "
                              "to guess which one is the claim. Narrow the pattern or edit by hand")

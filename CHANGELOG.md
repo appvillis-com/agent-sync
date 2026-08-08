@@ -1,3 +1,20 @@
+## v1.5.1
+
+### `release` could not remove the claim it had written
+
+`acquire` writes a marker into the status cell; `release` found the row again **by searching for the
+task id**. Between the two, a run's own work can add another mention of that id — a new row, a
+cross-reference — and release then sees several candidates, refuses to guess, and leaves
+`(claimed: r-…)` in the cell **permanently**.
+
+The result is worse than no claim: a status cell advertising a live lease that nobody holds, which
+the next agent reads as an occupied file.
+
+Release now narrows by the marker before falling back to the id. The marker names *this run*, so it
+is unambiguous however many rows mention the id. Proven both ways on the same scenario — acquire
+writes the tag, a second mention is inserted, and release removes it (`claim restored`); the
+previous version leaves it behind.
+
 ## v1.5.0
 
 ### The commit guard was blind to `git -C <dir> commit`, and to submodules
